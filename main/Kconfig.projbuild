@@ -1,0 +1,10 @@
+menu "EcoPV32 configuration"
+config WIFI_SSID
+  string "Router SSID"
+  help
+	Enter the WiFi SSID that EcoPV32 connects to
+config WIFI_PASS
+  string "Router password"
+  help
+	Enter the WiFi password for the SSID above
+endmenu
