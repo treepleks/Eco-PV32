@@ -1,10 +1,16 @@
 menu "EcoPV32 configuration"
 config WIFI_SSID
-  string "Router SSID"
+  string "SSID du point d'accès WiFi"
   help
-	Enter the WiFi SSID that EcoPV32 connects to
+	Entrez le SSID du point d'accès WiFi auquel EcoPV32 doit se connecter
 config WIFI_PASS
-  string "Router password"
+  string "Mot de passe du point d'accès WiFi"
   help
-	Enter the WiFi password for the SSID above
+	Entrez le mot de passe du point d'accès WiFi auquel EcoPV32 doit se connecter
+config LINKY_STANDARD
+  bool "Linky en mode standard"
+  help
+	Indiquez si le compteur Linky connecté à EcoPV32 est en mode standard.
+	Si non, le compteur sera considéré comme étant en mode historique. Dans ce
+	mode, il faut calibrer le décalage de phase manuellement.
 endmenu
