@@ -94,15 +94,19 @@
 #define DAC_BIASV_CHANNEL DAC_CHANNEL_2							  // PIN 26
 #define TIMER_DIVIDER (2)										  // Division pour le timer échantillonage (80 / 2 = 40 MHz)
 #define TIMER_SCALE_SEC (TIMER_BASE_CLK / TIMER_DIVIDER)		  // convertir compteur en secondes
-#define TIMER_INTERVAL (TIMER_SCALE_SEC / 50 / SAMPLES_PER_CYCLE) // délai échantillonage par cycle de 20ms
+#define TIMER_INTERVAL (TIMER_SCALE_SEC / 50 / SAMPLES_PER_CYCLE) // délai échantillonnage par cycle de 20ms
 #define PWM_DUTY_BIT_DEPTH (10)									  // Résolution en bit de la charge pour le LEDC PWM controller
 #define PWM_FREQUENCY (100)										  // Fréquence d'un 1/2 cycle  - TODO : changer  à la freq. mesurée
 #define TRIAC_GATE_IMPULSE_CYCLES (10)							  // longueur de l'impulsion envoyée au TRIAC/SSR
 #define TRIAC_GATE_QUIESCE_CYCLES (50)							  // temps min pour la gachette du TRIAC avant le prochain zc
 #define LINKY_UART_NUM UART_NUM_2								  // Numéro de la Linky UART
-#define LINKY_BAUD (1200)										  // Linky mode historique: 1200, mode standard: 9600
-#define LINKY_BUFFER_SIZE (1024)								  // Taille du buffer Linky. TODO: réduire au minimum
-#define PATTERN_CHR_NUM (1)										  // Nombre de caractères dans le motif UART
+#if CONFIG_LINKY_STANDARD
+#define LINKY_BAUD (9600) // Linky mode standard: 9600 bauds
+#else
+#define LINKY_BAUD (1200) // Linky mode historique: 1200 bauds
+#endif
+#define LINKY_BUFFER_SIZE (1024) // Taille du buffer Linky. TODO: réduire au minimum
+#define PATTERN_CHR_NUM (1)		 // Nombre de caractères dans le motif UART
 
 // macro recalibration ADC par la table ADC_calibration
 #define recalibrate(r) ((ADC_calibration[(r) >> 4] * (16 - ((r)&0xF))) + (ADC_calibration[((r) >> 4) + 1] * ((r)&0xF)))
@@ -131,7 +135,7 @@
 #define ICTRATIO 1000
 #define BIT2AMPSMULTIPLIER (((VREF / (1 << ADC_BITS)) / BURDENRESISTOR) * ICTRATIO)
 //-------------------------------------------------------------
-//      Variables globales
+//      Variables globales TODO: faire des classes C++
 // ------------------------------------------------------------
 // -- Wifi --
 static EventGroupHandle_t s_wifi_event_group;
@@ -141,27 +145,32 @@ static int s_retry_num = 0;
 
 // -- Linky UART --
 QueueHandle_t uart_queue;
-TaskHandle_t Linky; // Handle to the Linky UART sniffer
+TaskHandle_t Linky; // Handle vers le buffer d' l'UART Linky
 
 // -- Échantillonage --
-unsigned short ADC_calibration[258];   // Calibration data for the ADC
-TaskHandle_t SA;					   // Handle to the sample analyzer
-unsigned short adc_biasV = ADC_OFFSET; // adjusted by a digital filter
-unsigned short adc_biasI = ADC_OFFSET; // adjusted by a digital filter
-short phase_shift_cor = 2;			   // Phase shift correction
-bool prev_sign = true;				   // sign of previous half-cycle
-unsigned long gsumV2[2] = {0L, 0L};	   // one value per half-cycle, long required 24 bits summed more than 2⁹ times
-unsigned long gsumI2[2] = {0L, 0L};	   // one value per half-cycle, long required 24 bits summed more than 2⁹ times
-long gsumP[2] = {0L, 0L};			   // one value per half-cycle, long required 24 bits summed more than 2⁹ times
-uint64_t alarm_value = TIMER_INTERVAL; // initial timer value
-uint32_t zc_time = 0;				   // zero-crossing time (esp-timer time)
-uint32_t lastzc_time = 0;			   // previous zero-crossing time (esp-timer time)
+unsigned short ADC_calibration[258];   // Données de calibration pour le convertisseur AD
+TaskHandle_t SA;					   // Handle vers la tâche d'analyse des échantillons
+unsigned short adc_biasV = ADC_OFFSET; // Offset pour le canal des tensions
+unsigned short adc_biasI = ADC_OFFSET; // Offset pour le canal des courants
+short phase_shift_cor = 2;			   // Correction de phase
+bool prev_sign = true;				   // Signe du demi-cycle précédent
+unsigned long gsumV2[2] = {0L, 0L};	   // Somme des V² par signe de demi-cycle, long car 24 bits sommé plus de 2⁹ fois
+unsigned long gsumI2[2] = {0L, 0L};	   // Somme des I² par signe de demi-cycle, long car 24 bits sommé plus de 2⁹ fois
+long gsumP[2] = {0L, 0L};			   // Somme des P actives par demi-cycle,   long car 24 bits sommé plus de 2⁹ fois
+uint64_t alarm_value = TIMER_INTERVAL; // Valeur initiale du timer à interruption échantillonnage
+uint32_t zc_time = 0;				   // Date du dernier zéro-crossing (en µS, pris sur le registre hw de l'esp timer)
+uint32_t lastzc_time = 0;			   // Date du précédent zéro-crossing (en µS, pris sur le registre hw de l'esp timer)
+float One_sec_Vrms = 230.00;		   // Moyenne glissante sur une seconde de Vrms
+float One_sec_Irms = 0.0;			   // Moyenne glissante sur une seconde de Irms
+float Buf_Vrms[100];				   // Buffer d'une seconde de Vrms pour calibrage par Linky
+float Buf_Irms[100];				   // Buffer d'une seconde de Irms pour calibrage par Linky
+unsigned Buf_rms_idx = 0;			   // Position courante dans les buffers Vrms et Irms
 
 // -- Contrôle du TRIAC --
 float energy2delay[101];
-float set_point = 0.0;		// target power to inject
-const float PI_gain = 10.0; // PI controler gain
-const float PI_tau = 1.0;	// PI controler integrall timing
+float set_point = 0.0;		// Puissance active cible
+const float PI_gain = 10.0; // Gain du contrôleur PI
+const float PI_tau = 1.0;	// Délai du contrôleur PI
 
 //-------------------------------------------------------------
 //      Sous-routines WiFi
@@ -242,57 +251,74 @@ void linky_init_uart()
 	uart_pattern_queue_reset(LINKY_UART_NUM, 20);
 }
 
-//  Réception des messages, un CR (0x0D) est utilisé commemotif pour détecter les lignes
+// Réception des messages, un CR (0x0D) est utilisé comme motif pour détecter les lignes
+// d'une trame. TODO: serial over IP, tout expédier.
+// Les seuls tags qui semblent intéressants pour l'autocalibration sont:
+// Historique:
+//   - HCHC/HCHP, EJPHN/EJPHPM, BBRHCJB/BBRHPJB/BBRHCJW/BBRHPJW/BBRHCJR/BBRHPJR
+//     qui donnent accès à l'énergie active en Wh sur 9 chiffres
+//     => puissance active en dérivant
+//   - IINST: courant instantané (mais résolution 1 A sur 3 chiffres)
+//   - PAPP: puissance apparente (résolution 1 VA sur 5 chiffres)
+// Standard:
+//   - DATE: date et heure courante (mais NTP fait de même)
+//   - EAST: énergie active soutirée en Wh, 9 chiffres
+//   - EAIT: énergie active injectée en Wh, 9 chiffres
+//   - ERQ1: energie réactive en Wh 9 chiffres (ou ERQ4 ?)
+//   - IRMS1: intensité efficace, résolution 1 A sur 3 chiffres
+//   - URMS1: tension efficace, résolution 1 V sur 3 chiffres
+//   - SINSTS: puissance apparente soutirée en VA sur 5 chiffres
+//   - UMOY1: tendion moyenne (sur 10 minutes au lieu d'1 sec par défaut)
 static void linky_event_task(void *pvParameters)
 {
 	uart_event_t event;
 	size_t buffered_size;
-	uint8_t *dtmp = (uint8_t *)malloc(1024); // TODO set define
+	uint8_t *dtmp = (uint8_t *)malloc(128); // TODO set define
 
 	for (;;)
 	{
-		//Waiting for UART event.
+		// Attente d'évènement UART
 		if (xQueueReceive(uart_queue, (void *)&event, (portTickType)portMAX_DELAY))
 		{
 			bzero(dtmp, 1024);
-			ESP_LOGI(TAG, "uart[%d] event:", LINKY_UART_NUM);
+			ESP_LOGI(TAG, "Évènement UART[%d] :", LINKY_UART_NUM);
 			switch (event.type)
 			{
 			case UART_DATA:
-				ESP_LOGI(TAG, "[UART DATA]: %d", event.size);
+				ESP_LOGI(TAG, "[Donnée UART]: %d", event.size);
 				uart_read_bytes(LINKY_UART_NUM, dtmp, event.size, portMAX_DELAY);
-				ESP_LOGI(TAG, "[DATA EVT]:");
+				ESP_LOGI(TAG, "[Évènmt UART]:");
 				uart_write_bytes(LINKY_UART_NUM, (const char *)dtmp, event.size);
 				break;
 			//Event of HW FIFO overflow detected
 			case UART_FIFO_OVF:
-				ESP_LOGI(TAG, "hw fifo overflow");
+				ESP_LOGI(TAG, "Overflow FIFO UART");
 				uart_flush_input(LINKY_UART_NUM);
 				xQueueReset(uart_queue);
 				break;
 			//Event of UART ring buffer full
 			case UART_BUFFER_FULL:
-				ESP_LOGI(TAG, "ring buffer full");
+				ESP_LOGI(TAG, "Ring buffer UART plein");
 				uart_flush_input(LINKY_UART_NUM);
 				xQueueReset(uart_queue);
 				break;
 			//Event of UART RX break detected
 			case UART_BREAK:
-				ESP_LOGI(TAG, "uart rx break");
+				ESP_LOGI(TAG, "Rx break UART");
 				break;
 			//Event of UART parity check error
 			case UART_PARITY_ERR:
-				ESP_LOGI(TAG, "uart parity error");
+				ESP_LOGI(TAG, "Erreur de parité UART");
 				break;
 			//Event of UART frame error
 			case UART_FRAME_ERR:
-				ESP_LOGI(TAG, "uart frame error");
+				ESP_LOGI(TAG, "Errur de frame UART");
 				break;
 			//UART_PATTERN_DET
 			case UART_PATTERN_DET:
 				uart_get_buffered_data_len(LINKY_UART_NUM, &buffered_size);
 				int pos = uart_pattern_pop_pos(LINKY_UART_NUM);
-				ESP_LOGI(TAG, "[UART PATTERN DETECTED] pos: %d, buffered size: %d", pos, buffered_size);
+				ESP_LOGI(TAG, "[PATTERN UART DÉTECTÉ] pos: %d, buffer: %d", pos, buffered_size);
 				if (pos == -1)
 				{
 					// The pattern position queue is full, flush the rx buffer here.
@@ -304,13 +330,13 @@ static void linky_event_task(void *pvParameters)
 					uint8_t pat[PATTERN_CHR_NUM + 1];
 					memset(pat, 0, sizeof(pat));
 					uart_read_bytes(LINKY_UART_NUM, pat, PATTERN_CHR_NUM, 100 / portTICK_PERIOD_MS);
-					ESP_LOGI(TAG, "read data: %s", dtmp);
-					ESP_LOGI(TAG, "read pat : %s", pat);
+					ESP_LOGI(TAG, "lecture : %s", dtmp);
+					ESP_LOGI(TAG, "pattern : %s", pat);
 				}
 				break;
 			//Others
 			default:
-				ESP_LOGI(TAG, "uart event type: %d", event.type);
+				ESP_LOGI(TAG, "Évènement UART type: %d", event.type);
 				break;
 			}
 		}
@@ -430,14 +456,12 @@ void sample_analyzer(void *parameters)
 	static uint32_t ulNotifiedValue;
 	static BaseType_t xResult;
 	static unsigned halfCycleCount = 0;
-	static float fperiod = 10e-3; // durée d'un demi-cycle attendue
+	static float Period_F = 10e-3; // durée d'un demi-cycle attendue
 	static float Vrms_F = 230.0;
 	static float Pa_F = 0.0;
 	static float P_F = 0.0;
 	static float cosf_F = 1.0;
 	static float integral = 0.0;
-	static float sidecommand = 0.5;
-	static float delta = 0.01;
 	float command = 0.0;
 	float error;
 
@@ -468,32 +492,29 @@ void sample_analyzer(void *parameters)
 				command = 1.0;
 				integral -= error; // ne pas intégrer, impossible de faire plus
 			}
+			set_control(command);
 
-			float period = (zc_time - lastzc_time) / 1000000.0;
-			fperiod = ((99 * fperiod) + (1 * period)) / 100;
+			// Caclcul fréquence (période)
+			filter(Period_F, (zc_time - lastzc_time) / 1000000.0, 0.99);
 
+			// Calcul tension, courant et puissance efficace/apparente et cos(phi)
 			float Vrms = sqrt(((float)gsumV2[1 - prev_sign] / num_samples) * BIT2VOLTMULTIPLIER * BIT2VOLTMULTIPLIER);
+			One_sec_Vrms -= Buf_Vrms[Buf_rms_idx];
+			Buf_Vrms[Buf_rms_idx] = (Vrms / 100.0);
 			float Irms = sqrt(((float)gsumI2[1 - prev_sign] / num_samples) * BIT2AMPSMULTIPLIER * BIT2AMPSMULTIPLIER);
+			One_sec_Irms -= Buf_Irms[Buf_rms_idx];
+			Buf_Irms[Buf_rms_idx] = (Irms / 100.0);
+			Buf_rms_idx = (Buf_rms_idx + 1) % 100;
 			float Pa = Vrms * Irms;
 			float cos_phi = (P / Pa);
 			//float sin_phi = sqrt(1 - (cos_phi * cos_phi));
-
 			filter(Vrms_F, Vrms, 0.99);
 			filter(Pa_F, Pa, 0.99);
 			filter(P_F, P, 0.99);
 			filter(cosf_F, cos_phi, 0.99);
 
-			if (++halfCycleCount % 5 == 0)
-			{
-				sidecommand = sidecommand + delta;
-				if ((sidecommand > 0.99) || (sidecommand < 0.01))
-					delta = -delta;
-				set_control(sidecommand);
-			}
-
 			if (++halfCycleCount % 50 == 0)
 			{
-
 				/*
 				// gestion type PLL (à tester)
 				if (num_samples < (SAMPLES_PER_CYCLE / 2))
@@ -509,12 +530,12 @@ void sample_analyzer(void *parameters)
 				*/
 				// On fait clignoter la LED bleue chaque demi-seconde
 				gpio_set_level(PIN_LED, (halfCycleCount / 50) % 2);
-				printf("samples %3u freq %.2f adc_biasV/I %4d/%4d Vrms %.2f P %f Prms %f cos(phi) %.3f command %.2f\n", num_samples, 1 / (2 * fperiod), adc_biasV, adc_biasI, Vrms_F, P_F, Pa_F, cosf_F, sidecommand);
+				printf("samples %3u freq %.2f adc_biasV/I %4d/%4d Vrms %.2f P %f Prms %f cos(phi) %.3f command %.2f\n", num_samples, 1 / (2 * Period_F), adc_biasV, adc_biasI, Vrms_F, P_F, Pa_F, cosf_F, command);
 			}
 		}
 		else
 		{ // ne devrait jamais arriver (ou changer le temps dans xNotifyWait)
-			printf("Attente de l'échantillonneur trop longue!\n");
+			printf("Temps d'attente maximum de l'échantillonneur dépassée!\n");
 		}
 	}
 }
@@ -547,8 +568,9 @@ void triac_controller_init()
 	ESP_ERROR_CHECK(ledc_channel_config(&led_config));
 
 	LEDC.channel_group[0].channel[0].conf0.sig_out_en = 0;
-	printf("Configured TRIAC PWM timer and channel.\n");
+	printf("Timer et canal de contrôle PWM du TRIAC/SSR initialisé.\n");
 }
+
 //-------------------------------------------------------------
 //      Calibration de l'ADC de l'ESP32
 // ------------------------------------------------------------
@@ -639,7 +661,7 @@ void set_DAC_biases()
 }
 
 //-------------------------------------------------------------
-//      2chantillonnage en IRam par interruption timer
+//      Échantillonnage en IRam par interruption timer
 //      Utilise des accès direct au hardware pour
 //      le timer, les adc et une gpio
 // ------------------------------------------------------------
@@ -815,7 +837,7 @@ void app_main(void)
 	// se préparer à analyser les échantillons sur le core 0. TODO: réduire la taille de la pile
 	xTaskCreatePinnedToCore(sample_analyzer, "SA", 2 * 1024, NULL, 3, &SA, 1);
 
-	// Démarrer les interruptions
+	// Démarrer le timer pour interruptions
 	sampling_isr_init();
 
 	// préparer le générateur d'impulsions pour le TRIAC/SSR
