@@ -260,6 +260,7 @@ void linky_init_uart()
 //     => puissance active en dérivant
 //   - IINST: courant instantané (mais résolution 1 A sur 3 chiffres)
 //   - PAPP: puissance apparente (résolution 1 VA sur 5 chiffres)
+//
 // Standard:
 //   - DATE: date et heure courante (mais NTP fait de même)
 //   - EAST: énergie active soutirée en Wh, 9 chiffres
@@ -268,7 +269,9 @@ void linky_init_uart()
 //   - IRMS1: intensité efficace, résolution 1 A sur 3 chiffres
 //   - URMS1: tension efficace, résolution 1 V sur 3 chiffres
 //   - SINSTS: puissance apparente soutirée en VA sur 5 chiffres
-//   - UMOY1: tendion moyenne (sur 10 minutes au lieu d'1 sec par défaut)
+//   - UMOY1: tension moyenne (sur 10 minutes au lieu d'1 sec par défaut)
+// La puissance apparente en VA et le tension efficace en V devraient donner une meilleure
+// estimation du courant.
 static void linky_event_task(void *pvParameters)
 {
 	uart_event_t event;
@@ -663,14 +666,11 @@ void set_DAC_biases()
 //-------------------------------------------------------------
 //      Échantillonnage en IRam par interruption timer
 //      Utilise des accès direct au hardware pour
-//      le timer, les adc et une gpio
+//      le timer, les adc et une gpio (pour éviter les appels
+//      hors IRAM). La routinr prend environ 38 µS.
 // ------------------------------------------------------------
 void IRAM_ATTR onTimer()
 {
-	// section critique
-	timer_spinlock_take(TIMER_GROUP_1);
-	timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_1);
-
 	int V, I, phase_corr;
 	bool sign;
 	static unsigned lsumV = 0;
@@ -679,14 +679,24 @@ void IRAM_ATTR onTimer()
 	static unsigned half_cycle_sample_size = 0;
 	static int prev_I = 0;
 
+	// section critique
+	timer_spinlock_take(TIMER_GROUP_1);
+	timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_1);
+
 	// échantillonnage I
 	SENS.sar_meas_start1.sar1_en_pad = (1 << ADC_AMPS_CHANNEL);
+
+	// The following loop takes ~ 1 µS
 	while (SENS.sar_slave_addr1.meas_status != 0)
 		;
+
 	SENS.sar_meas_start1.meas1_start_sar = 0;
 	SENS.sar_meas_start1.meas1_start_sar = 1;
+
+	// The following loop takes ~ 7.5 µS
 	while (SENS.sar_meas_start1.meas1_done_sar == 0)
 		;
+
 	I = recalibrate(SENS.sar_meas_start1.meas1_data_sar);
 
 	// échantillonnage V
@@ -729,15 +739,16 @@ void IRAM_ATTR onTimer()
 		++half_cycle_sample_size;
 	}
 	else
-	{ // sinon (le signe change dans une zone attendue)
-		// mesurer les temps de ZC
+	{ // sinon, le signe change dans une zone attendue: mesurer les temps de ZC
 		lastzc_time = zc_time;
 		zc_time = REG_READ(FRC_TIMER_COUNT_REG(1));
+
 		// indiquer le ZC sur la pin de ZC
 		if (sign)
 			GPIO.out_w1ts = (1 << PIN_ZC);
 		else
 			GPIO.out_w1tc = (1 << PIN_ZC);
+
 		// remettre à jour les stats de l'autre demi-cycle (sign)
 		gsumI2[sign] = I * I;
 		gsumV2[sign] = V * V;
