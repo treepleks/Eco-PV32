@@ -33,8 +33,9 @@
 // => Envoi des info en Wifi sur site Web local ou sur eMonCMS ou similaire.
 // => Un serveur web server sur le core 0
 // => Un pont "serial IP" pour Tic linky
-// => uN if RS485 pour l'énergimètre de l'onduleur ou sur le port 502 de l'onduleur
+// => Un if RS485 pour l'énergimètre de l'onduleur ou sur le port 502 de l'onduleur
 // => Faire un circuit imprimé sur Kicad
+// => une if MQTT pour contrôler des charges et connaître leur état
 
 #include <stdio.h>
 #include <math.h>
@@ -49,6 +50,7 @@
 
 #include "driver/gpio.h"
 #include "driver/timer.h"
+#include "soc/rtc.h"
 #include "soc/frc_timer_reg.h"
 #include "driver/ledc.h"
 #include <driver/adc.h>
@@ -79,7 +81,7 @@
 
 #define WIFI_MAXIMUM_RETRY (5)
 
-#define PIN_LED (2)	  // pin de la LED bleur sur l'ESP32
+#define PIN_LED (2)	  // pin de la LED bleue sur l'ESP32
 #define PIN_TRIAC (5) // pin qui contrôle la gachette du TRIAC/SSR
 #define PIN_ZC (18)	  // pin qui montre la détection de ZC. Doit être < 32 (accès direct HW)
 
@@ -111,7 +113,7 @@
 // macro recalibration ADC par la table ADC_calibration
 #define recalibrate(r) ((ADC_calibration[(r) >> 4] * (16 - ((r)&0xF))) + (ADC_calibration[((r) >> 4) + 1] * ((r)&0xF)))
 // filtrage numérique simple
-#define filter(o, n, decay) o = ((o * decay) + (n * (1 - decay)))
+#define filter(o, n, decay) o = (((o) * (decay)) + ((n) * (1 - (decay))))
 
 //-------------------------------------------------------------
 // Conversion des lectures en unités du système international (SI)
@@ -165,6 +167,7 @@ float One_sec_Irms = 0.0;			   // Moyenne glissante sur une seconde de Irms
 float Buf_Vrms[100];				   // Buffer d'une seconde de Vrms pour calibrage par Linky
 float Buf_Irms[100];				   // Buffer d'une seconde de Irms pour calibrage par Linky
 unsigned Buf_rms_idx = 0;			   // Position courante dans les buffers Vrms et Irms
+uint32_t apb_freq = 80000000;		   // Frequence APB
 
 // -- Contrôle du TRIAC --
 float energy2delay[101];
@@ -459,7 +462,7 @@ void sample_analyzer(void *parameters)
 	static uint32_t ulNotifiedValue;
 	static BaseType_t xResult;
 	static unsigned halfCycleCount = 0;
-	static float Period_F = 10e-3; // durée d'un demi-cycle attendue
+	static float Period_F = 10e-3; // durée d'un demi-cycle attendue 10ms
 	static float Vrms_F = 230.0;
 	static float Pa_F = 0.0;
 	static float P_F = 0.0;
@@ -498,7 +501,8 @@ void sample_analyzer(void *parameters)
 			set_control(command);
 
 			// Caclcul fréquence (période)
-			filter(Period_F, (zc_time - lastzc_time) / 1000000.0, 0.99);
+			float delta_zc = zc_time - lastzc_time;
+			filter(Period_F, delta_zc / apb_freq, 0.99);
 
 			// Calcul tension, courant et puissance efficace/apparente et cos(phi)
 			float Vrms = sqrt(((float)gsumV2[1 - prev_sign] / num_samples) * BIT2VOLTMULTIPLIER * BIT2VOLTMULTIPLIER);
@@ -774,6 +778,10 @@ void IRAM_ATTR onTimer()
 
 void sampling_isr_init()
 {
+	// on suppose que FRC2 est libre (LAC TG0 utilisé comme HR)
+	REG_WRITE(FRC_TIMER_LOAD_REG(1), 0);
+	REG_WRITE(FRC_TIMER_CTRL_REG(1), FRC_TIMER_PRESCALER_1 | FRC_TIMER_ENABLE);
+
 	// initialiser timer interruption
 	timer_config_t config;
 	config.divider = TIMER_DIVIDER;
@@ -820,6 +828,9 @@ void app_main(void)
 	gpio_pad_select_gpio(PIN_ZC);
 	gpio_set_direction(PIN_ZC, GPIO_MODE_OUTPUT);
 
+	// Calibration timer FRC2
+	apb_freq = rtc_clk_apb_freq_get();
+
 	// Initialiser NVS (WiFi, TODO: autres paramètres. à mettre en sous-routine
 	esp_err_t ret = nvs_flash_init();
 	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -837,6 +848,7 @@ void app_main(void)
 
 	// se connecter au routeur
 	wifi_init_sta();
+	vTaskDelay(3000 / portTICK_PERIOD_MS);
 
 	// démarrer l'écoute Linky via l'UART: initialisation et démarrage tâche d'écoute
 	linky_init_uart();
