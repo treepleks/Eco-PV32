@@ -13,4 +13,8 @@ config LINKY_STANDARD
 	Indiquez si le compteur Linky connecté à EcoPV32 est en mode standard.
 	Si non, le compteur sera considéré comme étant en mode historique. Dans ce
 	mode, il faut calibrer le décalage de phase manuellement.
+config BROKER_URL
+  string "Adresse IP du broker MQTT"
+  help
+	Adresse IP du broker MQTT
 endmenu
