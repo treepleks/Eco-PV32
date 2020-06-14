@@ -56,7 +56,7 @@
 #include <driver/adc.h>
 #include <driver/dac.h>
 #include "driver/uart.h"
-
+#include <driver/spi_master.h>
 #include "esp_timer.h"
 #include <esp_task_wdt.h>
 
@@ -72,6 +72,10 @@
 #include "lwip/sys.h"
 #include "mqtt_client.h"
 
+#include <string.h>
+#include <u8g2.h>
+#include "u8g2_esp32_hal.h"
+
 #ifdef CONFIG_IDF_TARGET_ESP32
 #define CHIP_NAME "ESP32"
 #endif
@@ -85,6 +89,8 @@
 #define PIN_LED (2)	  // pin de la LED bleue sur l'ESP32
 #define PIN_TRIAC (5) // pin qui contrôle la gachette du TRIAC/SSR
 #define PIN_ZC (18)	  // pin qui montre la détection de ZC. Doit être < 32 (accès direct HW)
+#define PIN_SDA (21)  // pin I2C Data
+#define PIN_SCL (22)  // pin I2C Clock
 
 #define SAMPLES_PER_CYCLE (200) // nombre de paires d'échantillons (I,V) par cycle.
 #define ADC_BITS (12)
@@ -149,6 +155,9 @@ static int s_retry_num = 0;
 // -- Linky UART --
 QueueHandle_t uart_queue;
 TaskHandle_t Linky; // Handle vers le buffer d' l'UART Linky
+
+// SSD1306 Screen
+u8g2_t u8g2;
 
 // -- Échantillonage --
 unsigned short ADC_calibration[258];   // Données de calibration pour le convertisseur AD
@@ -542,7 +551,7 @@ void sample_analyzer(void *parameters)
 			}
 		}
 		else
-		{ // ne devrait jamais arriver (ou changer le temps dans xNotifyWait)
+		{ // ne devrait jamais arriver là (ou changer le temps dans xNotifyWait)
 			printf("Temps d'attente maximum de l'échantillonneur dépassée!\n");
 		}
 	}
@@ -877,6 +886,32 @@ static void mqtt_app_start(void)
 }
 
 //-------------------------------------------------------------
+//      OLED Screen SSD1306 géré par u8g2
+// ------------------------------------------------------------
+
+void init_screen()
+{
+	u8g2_esp32_hal_t u8g2_esp32_hal = U8G2_ESP32_HAL_DEFAULT;
+	u8g2_esp32_hal.sda = PIN_SDA;
+	u8g2_esp32_hal.scl = PIN_SCL;
+	u8g2_esp32_hal_init(u8g2_esp32_hal);
+
+	u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
+	u8x8_SetI2CAddress(&u8g2.u8x8, 0x78);
+	u8g2_InitDisplay(&u8g2);	 // initialisation => sleep mode
+	u8g2_SetPowerSave(&u8g2, 0); // réveil du display
+}
+
+void test_screen()
+{
+	u8g2_ClearBuffer(&u8g2);
+	u8g2_DrawBox(&u8g2, 0, 26, 80, 6);
+	u8g2_DrawFrame(&u8g2, 0, 26, 100, 6);
+	u8g2_SetFont(&u8g2, u8g2_font_fur11_tf);
+	u8g2_DrawStr(&u8g2, 2, 17, "Hi Thomas!");
+	u8g2_SendBuffer(&u8g2);
+}
+//-------------------------------------------------------------
 //      Main
 // ------------------------------------------------------------
 void app_main(void)
@@ -897,6 +932,9 @@ void app_main(void)
 
 	// Calibration timer FRC2
 	apb_freq = rtc_clk_apb_freq_get();
+
+	init_screen();
+	test_screen();
 
 	// Initialiser NVS (WiFi, TODO: autres paramètres. à mettre en sous-routine
 	esp_err_t ret = nvs_flash_init();
