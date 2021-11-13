@@ -2,7 +2,7 @@
 // Informations intéressantes
 //-------------------------------------------------------------
 // TIC Linky: voir http://hallard.me/demystifier-la-teleinfo/
-// un optocoupleur SFH620A ou mieux  LTV-814. Ayant un seul client
+// un optocoupleur SFH620A ou mieux LTV-814. Ayant un seul client
 // TIC connecté sur Linky, j'ai mis une résistance de 1.2kΩ pour
 // avoir un signal série clair. La pull-up est inutile (configurée
 // en pull-up en interne pour le port série).
@@ -17,15 +17,15 @@
 // See eg. www.eevblog.com/forum/projects/igbt-dimmer-pwm-ac-power-control-for-an-immersion-heater
 // qui utilise un optocoupleur H11L1 , un driver de MOSFET ICL7667 et on pourrait compléter
 // avec 2 IRG4BC30FD IGBT (ou des MOSFET similaires: SIHA22N60AE-GE3 ou IPA60R125C6 ou
-// mieux FDL100N50F). FIltrage HA32L-20A or CW4L2-20A-T (passe-bas fréquence inconnue).
+// mieux FDL100N50F). Filtrage HA32L-20A or CW4L2-20A-T (passe-bas fréquence inconnue).
 // Voir filtres ici https://www.astuces-pratiques.fr/electronique/le-filtre-secteur,
 // ou Shaffner https://www.st.com/content/ccc/resource/technical/document/application_note/89/e9/dd/39/ff/74/4a/55/CD00091944.pdf/files/CD00091944.pdf/jcr:content/translations/en.CD00091944.pdf
 // La nécessité d'une tension de 15V typ pour la gachette est pénible, mais tirable du secteur (capacité).
 // Ou utiliser un redresseur => un seul MOSFET suffirait.
 
 // Simplifier l'usage et le hardware nécessaire;
-// - éviter l'échantillonage: utiliser Linky seulement ?
-// - détection ZC: utiliser une alim secteur avec une capacité et une LED/zener ou optocoupleur.
+// - éviter l'échantillonnage: utiliser Linky seulement avec
+// - détection ZC: un optocoupleur avec un resistance de 300 à 400kΩ.
 // Voir xlyric.
 // - Nécessaires: V (linky ou ADC+transfo), P (linky ou ADC+ICT), ZC (ZC ou ADC/transfo).
 // Si 2 sources, calibration automatique.
@@ -40,6 +40,8 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -71,6 +73,7 @@
 #include "lwip/err.h"
 #include "lwip/sys.h"
 #include "mqtt_client.h"
+#include "esp_sntp.h"
 
 #include <string.h>
 #include <u8g2.h>
@@ -86,7 +89,8 @@
 
 #define WIFI_MAXIMUM_RETRY (5)
 
-#define PIN_LED (2)	  // pin de la LED bleue sur l'ESP32
+#define PIN_LED (2)	  // pin de la LED contrôle sur l'ESP32
+#define PIN_UART (4)  // pin à utiliser pour rerouter l'UART pour RS-485
 #define PIN_TRIAC (5) // pin qui contrôle la gachette du TRIAC/SSR
 #define PIN_ZC (18)	  // pin qui montre la détection de ZC. Doit être < 32 (accès direct HW)
 #define PIN_SDA (21)  // pin I2C Data
@@ -125,22 +129,22 @@
 //-------------------------------------------------------------
 // Conversion des lectures en unités du système international (SI)
 //-------------------------------------------------------------
-// Volts: j'utilise 1.8V d'un transfor récupéré sur un vieux détecteur EDF Tempo.
-// Sinon, utiliser un trabsfo 5V comme EcoPV (Marque Hans).
+// Volts: j'utilise 1.8V d'un transfo récupéré sur un vieux détecteur EDF Tempo.
+// Sinon, utiliser un transfo 5V comme EcoPV (Marque Hans).
 // Un mV mesuré est obtenu après transfo + pont diviseur. Le transfo devise par 230/1.8
 // soit 127.66666, délivrant 5.09116882454 V crête à crête). Pour ramener un max de 250V
-// en entrée à 3.3 V crpête à crête, il faut diviser par plus de (250/230)*2*1.8*sqrt(2)/3.3
+// en entrée à 3.3 V crête à crête, il faut diviser par plus de (250/230)*2*1.8*sqrt(2)/3.3
 // = 1.68. On va diviser par 2 avec un pont 1kΩ + 1kΩ (pertes de 0.9 mA sous 1.8V = 1.7mW).
-#define TRANSFORMERATIO (230.0 / 2.07)
+#define TRANSFORMERATIO (230.0 / 2.085)
 #define VDIVIDERATIO (2.0)
 #define VREF (3.3)
 #define BIT2VOLTMULTIPLIER ((VREF / (1 << ADC_BITS)) * TRANSFORMERATIO * VDIVIDERATIO)
 // Amps  (channel 0): le voltage mesuré doit faire moins que 3.3V crête à crête. Avec un
-// courant de moins de 50A (11kW) et un PZCT 1:1000 ICT (100A), on a max 50mA RMSdonc
+// courant de moins de 50A (11kW) et un PZCT 1:1000 ICT (100A), on a max 50mA RMS donc
 // 141.421356237mA crête à crête. La charge (burden) doit être inférieure à 3300/141.42
 // soit 23.3347475605. Donc 22 ou 18Ω. A 50A pour 18Ω, cela génère un perte de 45mW. Une
 // résistance 1/4 W 1% suffit. J'ai mis une 20Ω.
-#define BURDENRESISTOR 20.2
+#define BURDENRESISTOR 26
 #define ICTRATIO 1000
 #define BIT2AMPSMULTIPLIER (((VREF / (1 << ADC_BITS)) / BURDENRESISTOR) * ICTRATIO)
 //-------------------------------------------------------------
@@ -158,13 +162,14 @@ TaskHandle_t Linky; // Handle vers le buffer d' l'UART Linky
 
 // SSD1306 Screen
 u8g2_t u8g2;
+unsigned P_max = 0.0; // Power range for OLED display
 
-// -- Échantillonage --
+// -- Échantillonnage --
 unsigned short ADC_calibration[258];   // Données de calibration pour le convertisseur AD
 TaskHandle_t SA;					   // Handle vers la tâche d'analyse des échantillons
 unsigned short adc_biasV = ADC_OFFSET; // Offset pour le canal des tensions
 unsigned short adc_biasI = ADC_OFFSET; // Offset pour le canal des courants
-short phase_shift_cor = 2;			   // Correction de phase
+short phase_shift_cor = 1;			   // Correction de phase (prédiction linéaire)
 bool prev_sign = true;				   // Signe du demi-cycle précédent
 unsigned long gsumV2[2] = {0L, 0L};	   // Somme des V² par signe de demi-cycle, long car 24 bits sommé plus de 2⁹ fois
 unsigned long gsumI2[2] = {0L, 0L};	   // Somme des I² par signe de demi-cycle, long car 24 bits sommé plus de 2⁹ fois
@@ -178,12 +183,19 @@ float Buf_Vrms[100];				   // Buffer d'une seconde de Vrms pour calibrage par Li
 float Buf_Irms[100];				   // Buffer d'une seconde de Irms pour calibrage par Linky
 unsigned Buf_rms_idx = 0;			   // Position courante dans les buffers Vrms et Irms
 uint32_t apb_freq = 80000000;		   // Frequence APB
+float P_F = 0.0;					   // Filtered active power measured by ICT * V
+float cosf_F = 1.0;					   // Filtered Cos(phi)
+float Vrms_F = 230.0;				   // Filtered RMS voltage
+float R_est = 0.0;					   // Estimated resistance of the load (a purely resistive load is assumed)
 
-// -- Contrôle du TRIAC --
+// -- Contrôleur PI du TRIAC --
+int command_mode = 0;		   // -1 = OFF, 0 = AUTO, 1 = ON
+float command = 0.0;		   // Command sent to TRIAC in fraction of maximal energy
+float set_point = 0.0;		   // Puissance active cible
+const float PI_gain = 0.00002; // Gain du contrôleur PI
+const float PI_tau = 1.0;	   // Délai du contrôleur PI
+
 float energy2delay[101];
-float set_point = 0.0;		// Puissance active cible
-const float PI_gain = 10.0; // Gain du contrôleur PI
-const float PI_tau = 1.0;	// Délai du contrôleur PI
 
 //-------------------------------------------------------------
 //      Sous-routines WiFi
@@ -279,12 +291,12 @@ void linky_init_uart()
 //   - EAST: énergie active soutirée en Wh, 9 chiffres
 //   - EAIT: énergie active injectée en Wh, 9 chiffres
 //   - ERQ1: energie réactive en Wh 9 chiffres (ou ERQ4 ?)
-//   - IRMS1: intensité efficace, résolution 1 A sur 3 chiffres
-//   - URMS1: tension efficace, résolution 1 V sur 3 chiffres
+//   - IRMS1: intensité efficace, résolution 1A sur 3 chiffres
+//   - URMS1: tension efficace, résolution 1V sur 3 chiffres
 //   - SINSTS: puissance apparente soutirée en VA sur 5 chiffres
 //   - UMOY1: tension moyenne (sur 10 minutes au lieu d'1 sec par défaut)
 // La puissance apparente en VA et le tension efficace en V devraient donner une meilleure
-// estimation du courant.
+// estimation du courant RMS.
 static void linky_event_task(void *pvParameters)
 {
 	uart_event_t event;
@@ -417,7 +429,7 @@ void compute_e2d_table()
 }
 
 // Utilise la table energy2delay pour calculer la fraction de demi-cycle
-// nécessaire pour avoirune fraction de l'énergie d'un demi-cycle.
+// nécessaire pour avoir une fraction de l'énergie d'un demi-cycle.
 float energy_fraction_to_delay(float E_frac)
 {
 	E_frac = ((E_frac < 0.0) ? 0.0 : E_frac);
@@ -442,14 +454,14 @@ float energy_fraction_to_delay(float E_frac)
 //      Gestion du TRIAC/SSR. Inspiré de
 // https://github.com/masoncj/esp32-dimmer/blob/master/main/main.c
 // ------------------------------------------------------------
-void set_control(float command)
+void set_control(float cmd)
 {
 	// si la commande est très basse, on éteint le PWM
-	if (command <= 0.01)
+	if (cmd <= 0.001)
 	{
 		LEDC.channel_group[0].channel[0].conf0.sig_out_en = 0;
-	} // sinon, on l'alluime dans la durée
-	else if (command >= 0.99)
+	} // sinon, on l'allume dans la durée
+	else if (cmd >= 0.999)
 	{
 		LEDC.channel_group[0].channel[0].duty.duty = (1 << (PWM_DUTY_BIT_DEPTH + 3)) - 1;
 		LEDC.channel_group[0].channel[0].hpoint.hpoint = 0;
@@ -459,9 +471,121 @@ void set_control(float command)
 	else // sinon, on ajuste la position de l'impulsion
 	{
 		LEDC.channel_group[0].channel[0].duty.duty = TRIAC_GATE_IMPULSE_CYCLES << 4;
-		LEDC.channel_group[0].channel[0].hpoint.hpoint = (unsigned)(energy_fraction_to_delay(command) * (1 << PWM_DUTY_BIT_DEPTH));
+		LEDC.channel_group[0].channel[0].hpoint.hpoint = (unsigned)(energy_fraction_to_delay(cmd) * (1 << PWM_DUTY_BIT_DEPTH));
 		LEDC.channel_group[0].channel[0].conf0.sig_out_en = 1;
 		LEDC.channel_group[0].channel[0].conf1.duty_start = 1;
+	}
+}
+
+//-------------------------------------------------------------
+//      OLED Screen SSD1306 géré par u8g2
+// ------------------------------------------------------------
+
+void init_screen()
+{
+	u8g2_esp32_hal_t u8g2_esp32_hal = U8G2_ESP32_HAL_DEFAULT;
+	u8g2_esp32_hal.sda = PIN_SDA;
+	u8g2_esp32_hal.scl = PIN_SCL;
+	u8g2_esp32_hal_init(u8g2_esp32_hal);
+
+	u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
+	u8x8_SetI2CAddress(&u8g2.u8x8, 0x78);
+	u8g2_InitDisplay(&u8g2);	 // initialisation => sleep mode
+	u8g2_SetPowerSave(&u8g2, 0); // réveil du display
+
+	u8g2_ClearBuffer(&u8g2);
+	u8g2_SetFont(&u8g2, u8g2_font_finderskeepers_tf);
+	u8g2_SetFontMode(&u8g2, 0);
+	u8g2_DrawStr(&u8g2, 1, 7, "Commande");
+	u8g2_DrawFrame(&u8g2, 0, 9, 128, 7);
+
+	u8g2_DrawStr(&u8g2, 1, 26, "Puissance");
+	u8g2_DrawStr(&u8g2, 121, 26, "W");
+	u8g2_DrawStr(&u8g2, 121, 45, "W");
+	u8g2_DrawFrame(&u8g2, 0, 28, 128, 7);
+	u8g2_DrawHLine(&u8g2, 63, 27, 2);
+	u8g2_DrawHLine(&u8g2, 63, 35, 2);
+
+	u8g2_DrawStr(&u8g2, 1, 45, "Cos(phi)");
+	u8g2_DrawFrame(&u8g2, 0, 47, 128, 7);
+
+	u8g2_DrawStr(&u8g2, 1, 63, "Tension");
+	u8g2_DrawStr(&u8g2, 60, 63, "V");
+
+	u8g2_SendBuffer(&u8g2);
+}
+
+void update_screen()
+{
+	static time_t now;
+	static struct tm timeinfo;
+
+	time(&now);
+	localtime_r(&now, &timeinfo);
+	if (timeinfo.tm_hour >= 6 && timeinfo.tm_hour < 22)
+	{
+		static char buff[12];
+		const char *mode_str[] = {"OFF", "AUTO", "ON"};
+		unsigned w;
+
+		u8g2_SetPowerSave(&u8g2, 0);
+		u8g2_SetDrawColor(&u8g2, 0);
+		u8g2_DrawBox(&u8g2, 90, 0, 126, 7); // erase Mode
+		u8g2_DrawBox(&u8g2, 1, 11, 126, 4); // erase meters
+		u8g2_DrawBox(&u8g2, 1, 30, 126, 4);
+		u8g2_DrawBox(&u8g2, 1, 49, 126, 4);
+
+		u8g2_DrawBox(&u8g2, 80, 18, 40, 9); // erase P_F watt
+		if (((1.05) * fabs(P_F) > P_max) || fabs(P_F) < P_max / 2)
+			u8g2_DrawBox(&u8g2, 91, 36, 28, 9); // erase P_max
+		u8g2_DrawBox(&u8g2, 40, 54, 18, 9);
+		u8g2_DrawBox(&u8g2, 80, 54, 47, 9);
+
+		u8g2_SetDrawColor(&u8g2, 1);
+		u8g2_DrawBox(&u8g2, 1, 11, (int)(command * 125), 4);
+		if (((1.05) * fabs(P_F) > P_max) || fabs(P_F) < P_max / 2)
+		{
+			P_max = ceil((1.05 * fabs(P_F)) / 100.0) * 100;
+			sprintf(buff, "%d", (int)P_max);
+			w = u8g2_GetStrWidth(&u8g2, buff);
+			u8g2_DrawStr(&u8g2, 119 - w, 45, buff);
+		}
+		if (P_F > 0)
+			u8g2_DrawBox(&u8g2, 64, 30, (int)((P_F / P_max) * 64), 4);
+		else
+			u8g2_DrawBox(&u8g2, 64 + (int)((P_F / P_max) * 64), 30, -(int)((P_F / P_max) * 64), 4);
+
+		u8g2_DrawBox(&u8g2, 1, 49, (int)(fabs(cosf_F) * 125), 4);
+		w = u8g2_GetStrWidth(&u8g2, mode_str[command_mode + 1]);
+		u8g2_DrawStr(&u8g2, 127 - w, 7, mode_str[command_mode + 1]);
+		sprintf(buff, "%d", (int)Vrms_F);
+		w = u8g2_GetStrWidth(&u8g2, buff);
+		u8g2_DrawStr(&u8g2, 58 - w, 63, buff);
+
+		strftime(buff, sizeof(buff), "%R", &timeinfo);
+		w = u8g2_GetStrWidth(&u8g2, buff);
+		u8g2_DrawStr(&u8g2, 127 - w, 63, buff);
+
+		if (P_F < 0)
+			u8g2_SetDrawColor(&u8g2, 1);
+		sprintf(buff, "%d", (int)P_F);
+		w = u8g2_GetStrWidth(&u8g2, buff);
+		u8g2_DrawStr(&u8g2, 119 - w, 26, buff);
+		u8g2_SetDrawColor(&u8g2, 0);
+
+		u8g2_SetDrawColor(&u8g2, 2);
+		int sp = 64 + ((set_point / P_max) * 63);
+		if (command_mode == 0 && sp <= 124 && sp >= 3)
+		{
+			u8g2_DrawTriangle(&u8g2, sp, 31, sp + 2, 33, sp + 2, 29);
+			u8g2_DrawTriangle(&u8g2, sp, 31, sp - 2, 33, sp - 2, 29);
+		}
+
+		u8g2_SendBuffer(&u8g2);
+	}
+	else
+	{
+		u8g2_SetPowerSave(&u8g2, 1);
 	}
 }
 //-------------------------------------------------------------
@@ -473,12 +597,9 @@ void sample_analyzer(void *parameters)
 	static BaseType_t xResult;
 	static unsigned halfCycleCount = 0;
 	static float Period_F = 10e-3; // durée d'un demi-cycle attendue 10ms
-	static float Vrms_F = 230.0;
 	static float Pa_F = 0.0;
-	static float P_F = 0.0;
-	static float cosf_F = 1.0;
 	static float integral = 0.0;
-	float command = 0.0;
+
 	float error;
 
 	for (;;)
@@ -494,9 +615,24 @@ void sample_analyzer(void *parameters)
 			// calcul puissance, cible et commande du contrôleur PI
 			unsigned short num_samples = (unsigned short)ulNotifiedValue;
 			float P = (float)gsumP[1 - prev_sign] / num_samples * (BIT2VOLTMULTIPLIER * BIT2AMPSMULTIPLIER);
-			error = set_point - P;
-			integral += error;
-			command = (PI_gain * error) + ((PI_gain / PI_tau) * integral);
+			filter(P_F, P, 0.98);
+
+			if (command_mode == -1)
+			{
+				command = 0.0;
+				error = 0;
+			}
+			else if (command_mode == 1)
+			{
+				command = 1.0;
+				error = 0;
+			}
+			else
+			{
+				error = (set_point - P_F);
+				integral += error;
+				command = (PI_gain * error) + ((PI_gain / PI_tau) * integral);
+			}
 
 			if (command <= 0.0)
 			{
@@ -510,9 +646,9 @@ void sample_analyzer(void *parameters)
 			}
 			set_control(command);
 
-			// Caclcul fréquence (période)
+			// Calcul fréquence (période)
 			float delta_zc = zc_time - lastzc_time;
-			filter(Period_F, delta_zc / apb_freq, 0.99);
+			filter(Period_F, delta_zc / apb_freq, 0.98);
 
 			// Calcul tension, courant et puissance efficace/apparente et cos(phi)
 			float Vrms = sqrt(((float)gsumV2[1 - prev_sign] / num_samples) * BIT2VOLTMULTIPLIER * BIT2VOLTMULTIPLIER);
@@ -523,31 +659,19 @@ void sample_analyzer(void *parameters)
 			Buf_Irms[Buf_rms_idx] = (Irms / 100.0);
 			Buf_rms_idx = (Buf_rms_idx + 1) % 100;
 			float Pa = Vrms * Irms;
-			float cos_phi = (P / Pa);
-			//float sin_phi = sqrt(1 - (cos_phi * cos_phi));
-			filter(Vrms_F, Vrms, 0.99);
-			filter(Pa_F, Pa, 0.99);
-			filter(P_F, P, 0.99);
-			filter(cosf_F, cos_phi, 0.99);
+			filter(Vrms_F, Vrms, 0.98);
+			filter(Pa_F, Pa, 0.98);
+			cosf_F = (P_F / Pa_F);
 
-			if (++halfCycleCount % 50 == 0)
+			halfCycleCount += 1;
+			if (halfCycleCount % 100 == 0)
 			{
-				/*
-				// gestion type PLL (à tester)
-				if (num_samples < (SAMPLES_PER_CYCLE / 2))
-				{
-					alarm_value = alarm_value - 1;
-					timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, alarm_value);
-				}
-				else if (num_samples > (SAMPLES_PER_CYCLE / 2))
-				{
-					alarm_value = alarm_value + 1;
-					timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, alarm_value);
-				}
-				*/
-				// On fait clignoter la LED bleue chaque demi-seconde
+				// On fait clignoter la LED chaque seconde
 				gpio_set_level(PIN_LED, (halfCycleCount / 50) % 2);
-				printf("samples %3u freq %.2f adc_biasV/I %4d/%4d Vrms %.2f P %f Prms %f cos(phi) %.3f command %.2f\n", num_samples, 1 / (2 * Period_F), adc_biasV, adc_biasI, Vrms_F, P_F, Pa_F, cosf_F, command);
+				printf("#s %3u F %.2f biasV/I %4d/%4d Vrms %.2f P %f Prms %f cosf %.3f cmd %.3f\n",
+					   num_samples, 1 / (2 * Period_F), adc_biasV, adc_biasI, Vrms_F, P_F, Pa_F, cosf_F,
+					   command);
+				halfCycleCount = 0;
 			}
 		}
 		else
@@ -599,18 +723,20 @@ void triac_controller_init()
 // comparer la mesure ADC à la sortie du DAC attendue.
 // NB: 1) la linéarité du DAC a été vérifiée avec un ADC MCP3204.
 //     2) les ADC de l'ESP32 sont clairement non linéaires.
-void esp32_adc_calibrate()
+unsigned esp32_adc_calibrate()
 {
 	const static bool debug = false;
 	esp_err_t err;
 
 	gpio_num_t adc_gpio_num, dac_gpio_num;
+
 	err = adc1_pad_get_io_num(ADC_CALI_CHANNEL, &adc_gpio_num);
 	assert(err == ESP_OK);
 	err = dac_pad_get_io_num(DAC_CALI_CHANNEL, &dac_gpio_num);
 	assert(err == ESP_OK);
 
 	unsigned cal_fwd[256];
+	unsigned rmsd = 0;
 
 	printf("Calibration canal ADC %d @ GPIO %d via le canal DAC %d @ GPIO %d...", ADC_CALI_CHANNEL, adc_gpio_num, DAC_CALI_CHANNEL, dac_gpio_num);
 	fflush(stdout);
@@ -627,12 +753,19 @@ void esp32_adc_calibrate()
 	do
 	{
 		dac_output_voltage(DAC_CALI_CHANNEL, dac_output);
+		vTaskDelay(10 / portTICK_PERIOD_MS); // Let some time to the output to settle
+
 		// Moyenner les échantillons
 		for (unsigned j = 0; j < 64; ++j)
 		{
-			raw_read = adc1_get_raw(ADC_CALI_CHANNEL);
+			do
+			{
+				raw_read = adc1_get_raw(ADC_CALI_CHANNEL);
+			} while (raw_read < 0);
+
 			cal_fwd[dac_output] += raw_read;
 		}
+		rmsd += abs(dac_output - (cal_fwd[dac_output] / 1024));
 	} while (++dac_output != 0);
 
 	// Inverser et filtrer
@@ -645,19 +778,20 @@ void esp32_adc_calibrate()
 		{
 			ADC_calibration[i + 1] = x++;
 		}
-		--x;
+		x = ((x > 0) ? x - 1 : 0);
 	}
 
 	if (debug)
 	{
-		printf("Calibration ADC:\n");
+		printf("(rmsd %u):\n", rmsd);
 		for (unsigned i = 0; i < 258; ++i)
-			printf("Sortie ADC %d Corrigée %d\n", i, ADC_calibration[i]);
-		for (unsigned i = 0; i < MAX_ADC_OUTPUT; ++i)
-			printf("Sortie ADC %d Corrigée %d\n", i, recalibrate(i));
+			printf("Sortie ADC %u Corrigée %d\n", i, ADC_calibration[i]);
+		//for (unsigned i = 0; i < MAX_ADC_OUTPUT; ++i)
+		//	printf("Sortie ADC %d Corrigée %d\n", i, recalibrate(i));
 	}
 	dac_output_disable(DAC_CALI_CHANNEL);
 	printf("Ok.\n");
+	return rmsd;
 }
 
 // Fixer les sorties des DAC au point milieu pour les biais V/I.
@@ -745,8 +879,8 @@ void IRAM_ATTR onTimer()
 	V = (V - adc_biasV);
 	I = (I - adc_biasI) + phase_corr;
 
-	if ((half_cycle_sample_size < SAMPLES_PER_CYCLE * 9 / 20) || (prev_sign == sign))
-	{ // si < 90% d'un demi-cycle parcouru ou sile signe est inchangé: accumuler
+	if ((half_cycle_sample_size < (SAMPLES_PER_CYCLE * 95) / 200) || (prev_sign == sign))
+	{ // si < 95% d'un demi-cycle parcouru ou si le signe est inchangé: accumuler
 		gsumI2[prev_sign] += I * I;
 		gsumV2[prev_sign] += V * V;
 		gsumP[prev_sign] += V * I;
@@ -827,15 +961,16 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
 	esp_mqtt_client_handle_t client = event->client;
 	int msg_id;
+	const char MQTT_topic[] = "PV-Router/MODE";
 	// your_context_t *context = event->context;
 	switch (event->event_id)
 	{
 	case MQTT_EVENT_CONNECTED:
 		ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-		msg_id = esp_mqtt_client_subscribe(client, "gBridge/u81/stat/SonoffAmpli/POWER", 0);
+		msg_id = esp_mqtt_client_subscribe(client, MQTT_topic, 0);
 		ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
-		msg_id = esp_mqtt_client_publish(client, "gBridge/u81/cmnd/SonoffAmpli/POWER", "ON", 0, 1, 0);
+		//msg_id = esp_mqtt_client_publish(client, "gBridge/u81/cmnd/SonoffAmpli/POWER", "ON", 0, 1, 0);
 		ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 		break;
 	case MQTT_EVENT_DISCONNECTED:
@@ -844,8 +979,6 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 
 	case MQTT_EVENT_SUBSCRIBED:
 		ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-		msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
-		ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 		break;
 	case MQTT_EVENT_UNSUBSCRIBED:
 		ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
@@ -857,6 +990,34 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 		ESP_LOGI(TAG, "MQTT_EVENT_DATA");
 		printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 		printf("DATA=%.*s\r\n", event->data_len, event->data);
+		if ((event->topic_len == strlen(MQTT_topic)) && (strncmp(MQTT_topic, event->topic, event->topic_len) == 0))
+		{
+			if (strncmp(event->data, "ON", event->data_len) == 0)
+			{
+				printf("Setting to ON\n");
+				command_mode = 1;
+			}
+			else if (strncmp(event->data, "OFF", event->data_len) == 0)
+			{
+				printf("Setting to OFF\n");
+				command_mode = -1;
+			}
+			else if (strncmp(event->data, "AUTO", event->data_len) == 0)
+			{
+				printf("Setting to AUTO, target 0\n");
+				command_mode = 0;
+				set_point = 0.0;
+			}
+			else if (event->data_len <= 5) // message longer than 5 are ignored
+			{
+				char tmp[6];
+				strncpy(tmp, event->data, event->data_len);
+				tmp[event->data_len] = 0;
+				printf("Setting to AUTO, target %s\n", tmp);
+				command_mode = 0;
+				set_point = atoi(tmp);
+			}
+		}
 		break;
 	case MQTT_EVENT_ERROR:
 		ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -866,6 +1027,22 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 		break;
 	}
 	return ESP_OK;
+}
+
+// Tries to estimate the resistance of the supposedly purely resistive load by computing the power change of ON vs OFF
+float estimate_load()
+{
+	int save_cm = command_mode;
+	command_mode = -1;
+	vTaskDelay(5000 / portTICK_PERIOD_MS);
+	float P_load = -P_F;
+	float V1 = Vrms_F;
+
+	command_mode = 1;
+	vTaskDelay(5000 / portTICK_PERIOD_MS);
+	P_load += P_F;
+	command_mode = save_cm;
+	return V1 * Vrms_F / P_load;
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
@@ -885,32 +1062,6 @@ static void mqtt_app_start(void)
 	esp_mqtt_client_start(client);
 }
 
-//-------------------------------------------------------------
-//      OLED Screen SSD1306 géré par u8g2
-// ------------------------------------------------------------
-
-void init_screen()
-{
-	u8g2_esp32_hal_t u8g2_esp32_hal = U8G2_ESP32_HAL_DEFAULT;
-	u8g2_esp32_hal.sda = PIN_SDA;
-	u8g2_esp32_hal.scl = PIN_SCL;
-	u8g2_esp32_hal_init(u8g2_esp32_hal);
-
-	u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8g2_esp32_i2c_byte_cb, u8g2_esp32_gpio_and_delay_cb);
-	u8x8_SetI2CAddress(&u8g2.u8x8, 0x78);
-	u8g2_InitDisplay(&u8g2);	 // initialisation => sleep mode
-	u8g2_SetPowerSave(&u8g2, 0); // réveil du display
-}
-
-void test_screen()
-{
-	u8g2_ClearBuffer(&u8g2);
-	u8g2_DrawBox(&u8g2, 0, 26, 80, 6);
-	u8g2_DrawFrame(&u8g2, 0, 26, 100, 6);
-	u8g2_SetFont(&u8g2, u8g2_font_fur11_tf);
-	u8g2_DrawStr(&u8g2, 2, 17, "Hi Thomas!");
-	u8g2_SendBuffer(&u8g2);
-}
 //-------------------------------------------------------------
 //      Main
 // ------------------------------------------------------------
@@ -933,8 +1084,12 @@ void app_main(void)
 	// Calibration timer FRC2
 	apb_freq = rtc_clk_apb_freq_get();
 
-	init_screen();
-	test_screen();
+	// calibrer l'ADC
+	while (esp32_adc_calibrate() > 1750)
+		;
+
+	// Calculer la table energy2delay
+	compute_e2d_table();
 
 	// Initialiser NVS (WiFi, TODO: autres paramètres. à mettre en sous-routine
 	esp_err_t ret = nvs_flash_init();
@@ -945,14 +1100,22 @@ void app_main(void)
 	}
 	ESP_ERROR_CHECK(ret);
 
-	// calibrer l'ADC
-	esp32_adc_calibrate();
-
-	// Calculer la table energy2delay
-	compute_e2d_table();
+	init_screen();
 
 	// se connecter au routeur
 	wifi_init_sta();
+	vTaskDelay(3000 / portTICK_PERIOD_MS);
+	//setenv("TZ", "MET-1MDT,,M3.5.0/-2,M10.5.0/-1", 1);
+	setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+	tzset();
+
+	sntp_setoperatingmode(SNTP_OPMODE_POLL);
+	sntp_setservername(0, "pool.ntp.org");
+	sntp_setservername(1, "europe.pool.ntp.org");
+	sntp_setservername(2, "uk.pool.ntp.org ");
+	sntp_setservername(3, "us.pool.ntp.org");
+	sntp_setservername(4, "time1.google.com");
+	sntp_init();
 	vTaskDelay(3000 / portTICK_PERIOD_MS);
 
 	// démarrer l'écoute Linky via l'UART: initialisation et démarrage tâche d'écoute
@@ -971,8 +1134,14 @@ void app_main(void)
 	// préparer le générateur d'impulsions pour le TRIAC/SSR
 	triac_controller_init();
 
+	R_est = estimate_load();
+	printf("Estimated load resistance: %f Ohm\n", R_est);
+
 	mqtt_app_start();
 
 	for (;;)
-		vTaskDelay(50);
+	{
+		update_screen();
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+	}
 }
