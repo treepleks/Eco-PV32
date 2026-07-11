@@ -1011,35 +1011,72 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 		printf("DATA=%.*s\r\n", event->data_len, event->data);
 		if ((event->topic_len == strlen(MQTT_topic_mode)) && (strncmp(MQTT_topic_mode, event->topic, event->topic_len) == 0))
 		{
-			if (strncmp(event->data, "ON", event->data_len) == 0)
+			// Safe buffer to hold trimmed event data
+			char data_buf[32];
+			int data_len = event->data_len;
+			if (data_len > 31) {
+				data_len = 31;
+			}
+			memcpy(data_buf, event->data, data_len);
+			data_buf[data_len] = '\0';
+
+			// Trim leading whitespace/newlines
+			char *start = data_buf;
+			while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
+				start++;
+			}
+
+			// Trim trailing whitespace/newlines
+			int len = strlen(start);
+			while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t' || start[len - 1] == '\r' || start[len - 1] == '\n')) {
+				start[len - 1] = '\0';
+				len--;
+			}
+
+			if (strcmp(start, "ON") == 0)
 			{
 				printf("Setting to ON\n");
 				command_mode = 1;
 			}
-			else if (strncmp(event->data, "OFF", event->data_len) == 0)
+			else if (strcmp(start, "OFF") == 0)
 			{
 				printf("Setting to OFF\n");
 				command_mode = -1;
 			}
-			else if (strncmp(event->data, "AUTO", event->data_len) == 0)
+			else if (strcmp(start, "AUTO") == 0)
 			{
 				printf("Setting to AUTO, target 0\n");
 				command_mode = 0;
 				set_point = 0.0;
 			}
-			else if (strncmp(event->data, "PWM", event->data_len) == 0)
+			else if (strcmp(start, "PWM") == 0)
 			{
 				printf("Setting to PWM direct control mode\n");
 				command_mode = 2;
 			}
-			else if (event->data_len <= 5) // message longer than 5 are ignored
+			else
 			{
-				char tmp[6];
-				strncpy(tmp, event->data, event->data_len);
-				tmp[event->data_len] = 0;
-				printf("Setting to AUTO, target %s\n", tmp);
-				command_mode = 0;
-				set_point = atoi(tmp);
+				// Check if the trimmed string is a numeric target
+				int is_num = 1;
+				int start_len = strlen(start);
+				if (start_len == 0 || start_len > 5) {
+					is_num = 0;
+				} else {
+					for (int i = 0; i < start_len; i++) {
+						if (start[i] < '0' || start[i] > '9') {
+							is_num = 0;
+							break;
+						}
+					}
+				}
+
+				if (is_num) {
+					printf("Setting to AUTO, target %s\n", start);
+					command_mode = 0;
+					set_point = atoi(start);
+				} else {
+					printf("Ignored invalid MODE message: '%s'\n", start);
+				}
 			}
 		}
 		else if ((event->topic_len == strlen(MQTT_topic_pwm)) && (strncmp(MQTT_topic_pwm, event->topic, event->topic_len) == 0))
