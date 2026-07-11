@@ -2,6 +2,12 @@ esphome:
   name: eco-pv32
   includes:
     - eco_pv32_component.h
+  on_boot:
+    priority: 600.0
+    then:
+      - lambda: |-
+          auto eco_pv = new EcoPV32Component();
+          App.register_component_(eco_pv);
 
 esp32:
   board: esp32dev
@@ -39,35 +45,48 @@ i2c:
   scl: 22
 
 font:
-  - file: "https://github.com/google/fonts/raw/master/apache/roboto/Roboto-Bold.ttf"
+  - file: "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Bold.ttf"
     id: roboto_bold
     size: 14
-  - file: "https://github.com/google/fonts/raw/master/apache/roboto/Roboto-Regular.ttf"
+  - file: "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Regular.ttf"
     id: roboto_reg
     size: 10
 
 sensor:
-  - platform: custom
+  - platform: template
+    name: "Puissance Active"
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    id: active_power
     lambda: |-
-      auto eco_pv = new EcoPV32Component();
-      App.register_component(eco_pv);
-      return {eco_pv->p_f_sensor, eco_pv->vrms_f_sensor, eco_pv->cosf_f_sensor, eco_pv->command_sensor};
-    sensors:
-      - name: "Puissance Active"
-        unit_of_measurement: "W"
-        accuracy_decimals: 1
-        id: active_power
-      - name: "Tension Efficace"
-        unit_of_measurement: "V"
-        accuracy_decimals: 1
-        id: rms_voltage
-      - name: "Facteur de Puissance"
-        accuracy_decimals: 3
-        id: power_factor
-      - name: "Commande TRIAC"
-        unit_of_measurement: "%"
-        accuracy_decimals: 1
-        id: triac_command
+      return P_F;
+    update_interval: 1s
+
+  - platform: template
+    name: "Tension Efficace"
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    id: rms_voltage
+    lambda: |-
+      return Vrms_F;
+    update_interval: 1s
+
+  - platform: template
+    name: "Facteur de Puissance"
+    accuracy_decimals: 3
+    id: power_factor
+    lambda: |-
+      return cosf_F;
+    update_interval: 1s
+
+  - platform: template
+    name: "Commande TRIAC"
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    id: triac_command
+    lambda: |-
+      return command * 100.0;
+    update_interval: 1s
 
 number:
   - platform: template

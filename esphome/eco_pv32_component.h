@@ -29,6 +29,7 @@
 #include <soc/sens_reg.h>
 #include <soc/sens_struct.h>
 #include <soc/ledc_struct.h>
+#include "soc/gpio_reg.h"
 
 // Logging tags
 static const char *TAG_WIFI = "wifi_sta";
@@ -37,10 +38,10 @@ static const char *TAG_UART = "uart_linky";
 
 #define WIFI_MAXIMUM_RETRY (5)
 
-#define PIN_LED (2)	  // pin de la LED contrôle sur l'ESP32
-#define PIN_UART (4)  // pin à utiliser pour rerouter l'UART pour RS-485
-#define PIN_TRIAC (5) // pin qui contrôle la gachette du TRIAC/SSR
-#define PIN_ZC (18)	  // pin qui montre la détection de ZC. Doit être < 32 (accès direct HW)
+#define PIN_LED ((gpio_num_t)2)	  // pin de la LED contrôle sur l'ESP32
+#define PIN_UART ((gpio_num_t)4)  // pin à utiliser pour rerouter l'UART pour RS-485
+#define PIN_TRIAC ((gpio_num_t)5) // pin qui contrôle la gachette du TRIAC/SSR
+#define PIN_ZC ((gpio_num_t)18)	  // pin qui montre la détection de ZC. Doit être < 32 (accès direct HW)
 
 #define SAMPLES_PER_CYCLE (200) // nombre de paires d'échantillons (I,V) par cycle.
 #define ADC_BITS (12)
@@ -52,7 +53,7 @@ static const char *TAG_UART = "uart_linky";
 #define DAC_CALI_CHANNEL DAC_CHANNEL_1							  // PIN 25
 #define DAC_BIASV_CHANNEL DAC_CHANNEL_2							  // PIN 26
 #define TIMER_DIVIDER (2)										  // Division pour le timer échantillonage (80 / 2 = 40 MHz)
-#define TIMER_SCALE_SEC (TIMER_BASE_CLK / TIMER_DIVIDER)		  // convertir compteur en secondes
+#define TIMER_SCALE_SEC (80000000ULL / TIMER_DIVIDER)		  // convertir compteur en secondes
 #define TIMER_INTERVAL (TIMER_SCALE_SEC / 50 / SAMPLES_PER_CYCLE) // délai échantillonnage par cycle de 20ms
 #define PWM_DUTY_BIT_DEPTH (10)									  // Résolution en bit de la charge pour le LEDC PWM controller
 #define PWM_FREQUENCY (100)										  // Fréquence d'un 1/2 cycle  - TODO : changer  à la freq. mesurée
@@ -152,7 +153,7 @@ static void linky_event_task(void *pvParameters)
 	for (;;)
 	{
 		// Attente d'évènement UART
-		if (xQueueReceive(uart_queue, (void *)&event, (portTickType)portMAX_DELAY))
+		if (xQueueReceive(uart_queue, (void *)&event, portMAX_DELAY))
 		{
 			bzero(dtmp, LINKY_BUFFER_SIZE);
 			ESP_LOGI(TAG_UART, "Évènement UART[%d] :", LINKY_UART_NUM);
@@ -184,21 +185,23 @@ static void linky_event_task(void *pvParameters)
 				ESP_LOGI(TAG_UART, "Erreur de frame UART");
 				break;
 			case UART_PATTERN_DET:
-				uart_get_buffered_data_len(LINKY_UART_NUM, &buffered_size);
-				int pos = uart_pattern_pop_pos(LINKY_UART_NUM);
-				ESP_LOGI(TAG_UART, "[PATTERN UART DÉTECTÉ] pos: %d, buffer: %d", pos, buffered_size);
-				if (pos == -1)
 				{
-					uart_flush_input(LINKY_UART_NUM);
-				}
-				else
-				{
-					uart_read_bytes(LINKY_UART_NUM, dtmp, pos, 100 / portTICK_PERIOD_MS);
-					uint8_t pat[PATTERN_CHR_NUM + 1];
-					memset(pat, 0, sizeof(pat));
-					uart_read_bytes(LINKY_UART_NUM, pat, PATTERN_CHR_NUM, 100 / portTICK_PERIOD_MS);
-					ESP_LOGI(TAG_UART, "lecture : %s", dtmp);
-					ESP_LOGI(TAG_UART, "pattern : %s", pat);
+					uart_get_buffered_data_len(LINKY_UART_NUM, &buffered_size);
+					int pos = uart_pattern_pop_pos(LINKY_UART_NUM);
+					ESP_LOGI(TAG_UART, "[PATTERN UART DÉTECTÉ] pos: %d, buffer: %d", pos, buffered_size);
+					if (pos == -1)
+					{
+						uart_flush_input(LINKY_UART_NUM);
+					}
+					else
+					{
+						uart_read_bytes(LINKY_UART_NUM, dtmp, pos, 100 / portTICK_PERIOD_MS);
+						uint8_t pat[PATTERN_CHR_NUM + 1];
+						memset(pat, 0, sizeof(pat));
+						uart_read_bytes(LINKY_UART_NUM, pat, PATTERN_CHR_NUM, 100 / portTICK_PERIOD_MS);
+						ESP_LOGI(TAG_UART, "lecture : %s", dtmp);
+						ESP_LOGI(TAG_UART, "pattern : %s", pat);
+					}
 				}
 				break;
 			default:
@@ -387,22 +390,23 @@ void sample_analyzer(void *parameters)
 
 void triac_controller_init()
 {
-	ledc_timer_config_t timer_config = {
-		.speed_mode = LEDC_HIGH_SPEED_MODE,
-		.timer_num = 0,
-		.bit_num = PWM_DUTY_BIT_DEPTH,
-		.freq_hz = PWM_FREQUENCY,
-	};
+	ledc_timer_config_t timer_config;
+	timer_config.speed_mode = LEDC_HIGH_SPEED_MODE;
+	timer_config.timer_num = LEDC_TIMER_0;
+	timer_config.duty_resolution = LEDC_TIMER_10_BIT;
+	timer_config.freq_hz = PWM_FREQUENCY;
+	timer_config.clk_cfg = LEDC_AUTO_CLK;
 	ESP_ERROR_CHECK(ledc_timer_config(&timer_config));
 
-	ledc_channel_config_t led_config = {
-		.gpio_num = PIN_TRIAC,
-		.speed_mode = LEDC_HIGH_SPEED_MODE,
-		.channel = 0,
-		.timer_sel = LEDC_TIMER_0,
-		.duty = TRIAC_GATE_IMPULSE_CYCLES << 4,
-		.intr_type = LEDC_INTR_DISABLE,
-	};
+	ledc_channel_config_t led_config;
+	led_config.gpio_num = PIN_TRIAC;
+	led_config.speed_mode = LEDC_HIGH_SPEED_MODE;
+	led_config.channel = LEDC_CHANNEL_0;
+	led_config.timer_sel = LEDC_TIMER_0;
+	led_config.duty = TRIAC_GATE_IMPULSE_CYCLES << 4;
+	led_config.intr_type = LEDC_INTR_DISABLE;
+	led_config.hpoint = 0;
+	led_config.flags.output_invert = 0;
 	ESP_ERROR_CHECK(ledc_channel_config(&led_config));
 
 	LEDC.channel_group[0].channel[0].conf0.sig_out_en = 0;
@@ -427,7 +431,7 @@ unsigned esp32_adc_calibrate()
 	fflush(stdout);
 	dac_output_enable(DAC_CALI_CHANNEL);
 	adc1_config_width(ADC_WIDTH_BIT_12);
-	adc1_config_channel_atten(ADC_CALI_CHANNEL, ADC_ATTEN_11db);
+	adc1_config_channel_atten(ADC_CALI_CHANNEL, ADC_ATTEN_DB_12);
 
 	uint8_t dac_output = 0;
 	int raw_read;
@@ -448,7 +452,7 @@ unsigned esp32_adc_calibrate()
 
 			cal_fwd[dac_output] += raw_read;
 		}
-		rmsd += abs(dac_output - (cal_fwd[dac_output] / 1024));
+		rmsd += abs((int)dac_output - (int)(cal_fwd[dac_output] / 1024));
 	} while (++dac_output != 0);
 
 	unsigned x = 0;
@@ -490,7 +494,9 @@ void set_DAC_biases()
 	dac_output_voltage(DAC_CALI_CHANNEL, 128);
 }
 
-void IRAM_ATTR onTimer()
+static portMUX_TYPE timer_mux = portMUX_INITIALIZER_UNLOCKED;
+
+void IRAM_ATTR onTimer(void *arg)
 {
 	int V, I, phase_corr;
 	bool sign;
@@ -500,7 +506,7 @@ void IRAM_ATTR onTimer()
 	static unsigned half_cycle_sample_size = 0;
 	static int prev_I = 0;
 
-	timer_spinlock_take(TIMER_GROUP_1);
+	portENTER_CRITICAL_ISR(&timer_mux);
 	timer_group_clr_intr_status_in_isr(TIMER_GROUP_1, TIMER_1);
 
 	SENS.sar_meas_start1.sar1_en_pad = (1 << ADC_AMPS_CHANNEL);
@@ -557,9 +563,9 @@ void IRAM_ATTR onTimer()
 		zc_time = REG_READ(FRC_TIMER_COUNT_REG(1));
 
 		if (sign)
-			GPIO.out_w1ts = (1 << PIN_ZC);
+			REG_WRITE(GPIO_OUT_W1TS_REG, (1 << PIN_ZC));
 		else
-			GPIO.out_w1tc = (1 << PIN_ZC);
+			REG_WRITE(GPIO_OUT_W1TC_REG, (1 << PIN_ZC));
 
 		gsumI2[sign] = I * I;
 		gsumV2[sign] = V * V;
@@ -576,7 +582,7 @@ void IRAM_ATTR onTimer()
 		}
 	}
 	timer_group_enable_alarm_in_isr(TIMER_GROUP_1, TIMER_1);
-	timer_spinlock_give(TIMER_GROUP_1);
+	portEXIT_CRITICAL_ISR(&timer_mux);
 }
 
 void sampling_isr_init()
@@ -590,7 +596,7 @@ void sampling_isr_init()
 	config.counter_en = TIMER_PAUSE;
 	config.alarm_en = TIMER_ALARM_EN;
 	config.intr_type = TIMER_INTR_LEVEL;
-	config.auto_reload = true;
+	config.auto_reload = TIMER_AUTORELOAD_EN;
 #ifdef TIMER_GROUP_SUPPORTS_XTAL_CLOCK
 	config.clk_src = TIMER_SRC_CLK_APB;
 #endif
@@ -645,17 +651,17 @@ class EcoPV32Component : public esphome::Component {
   void setup() override {
 	instance() = this;
 	// Configuration pin TRIAC: sortie à 0 (OFF)
-	gpio_pad_select_gpio(PIN_TRIAC);
-	gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
+	esp_rom_gpio_pad_select_gpio(PIN_TRIAC);
+	gpio_set_direction(PIN_TRIAC, GPIO_MODE_OUTPUT);
 	gpio_set_level(PIN_TRIAC, 0);
 
 	// Activation pin LED
-	gpio_pad_select_gpio(PIN_LED);
+	esp_rom_gpio_pad_select_gpio(PIN_LED);
 	gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
 
 	// Activation pin ZC
 	assert(PIN_ZC < 32);
-	gpio_pad_select_gpio(PIN_ZC);
+	esp_rom_gpio_pad_select_gpio(PIN_ZC);
 	gpio_set_direction(PIN_ZC, GPIO_MODE_OUTPUT);
 
 	// Calibration timer FRC2
