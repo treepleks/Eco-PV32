@@ -153,7 +153,9 @@
 // -- Wifi --
 static EventGroupHandle_t s_wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
-static const char *TAG = "wifi station";
+static const char *TAG_WIFI = "wifi_sta";
+static const char *TAG_MQTT = "mqtt";
+static const char *TAG_UART = "uart_linky";
 static int s_retry_num = 0;
 
 // -- Linky UART --
@@ -212,10 +214,10 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 	{
 		esp_wifi_connect();
 		xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-		ESP_LOGI(TAG, "retry to connect to the AP");
+		ESP_LOGI(TAG_WIFI, "retry to connect to the AP");
 		if (command_mode == 1 || command_mode == 2)
 		{
-			ESP_LOGW(TAG, "WiFi disconnected, stopping remote-controlled load for safety");
+			ESP_LOGW(TAG_WIFI, "WiFi disconnected, stopping remote-controlled load for safety");
 			command_mode = -1;
 			command = 0.0;
 		}
@@ -223,7 +225,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 	else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
 	{
 		ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-		ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+		ESP_LOGI(TAG_WIFI, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
 		s_retry_num = 0;
 		xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 	}
@@ -255,7 +257,7 @@ void wifi_init_sta(void)
 	ESP_ERROR_CHECK(esp_wifi_start());
 	esp_wifi_set_ps(WIFI_PS_NONE);
 
-	ESP_LOGI(TAG, "wifi_init_sta finished. Connected to AP %s\n", CONFIG_WIFI_SSID);
+	ESP_LOGI(TAG_WIFI, "wifi_init_sta finished. Connected to AP %s\n", CONFIG_WIFI_SSID);
 }
 
 //-------------------------------------------------------------
@@ -311,44 +313,44 @@ static void linky_event_task(void *pvParameters)
 		if (xQueueReceive(uart_queue, (void *)&event, (portTickType)portMAX_DELAY))
 		{
 			bzero(dtmp, LINKY_BUFFER_SIZE);
-			ESP_LOGI(TAG, "Évènement UART[%d] :", LINKY_UART_NUM);
+			ESP_LOGI(TAG_UART, "Évènement UART[%d] :", LINKY_UART_NUM);
 			switch (event.type)
 			{
 			case UART_DATA:
-				ESP_LOGI(TAG, "[Donnée UART]: %d", event.size);
+				ESP_LOGI(TAG_UART, "[Donnée UART]: %d", event.size);
 				uart_read_bytes(LINKY_UART_NUM, dtmp, event.size, portMAX_DELAY);
-				ESP_LOGI(TAG, "[Évènmt UART]:");
+				ESP_LOGI(TAG_UART, "[Évènmt UART]:");
 				uart_write_bytes(LINKY_UART_NUM, (const char *)dtmp, event.size);
 				break;
 			// Event of HW FIFO overflow detected
 			case UART_FIFO_OVF:
-				ESP_LOGI(TAG, "Overflow FIFO UART");
+				ESP_LOGI(TAG_UART, "Overflow FIFO UART");
 				uart_flush_input(LINKY_UART_NUM);
 				xQueueReset(uart_queue);
 				break;
 			// Event of UART ring buffer full
 			case UART_BUFFER_FULL:
-				ESP_LOGI(TAG, "Ring buffer UART plein");
+				ESP_LOGI(TAG_UART, "Ring buffer UART plein");
 				uart_flush_input(LINKY_UART_NUM);
 				xQueueReset(uart_queue);
 				break;
 			// Event of UART RX break detected
 			case UART_BREAK:
-				ESP_LOGI(TAG, "Rx break UART");
+				ESP_LOGI(TAG_UART, "Rx break UART");
 				break;
 			// Event of UART parity check error
 			case UART_PARITY_ERR:
-				ESP_LOGI(TAG, "Erreur de parité UART");
+				ESP_LOGI(TAG_UART, "Erreur de parité UART");
 				break;
 			// Event of UART frame error
 			case UART_FRAME_ERR:
-				ESP_LOGI(TAG, "Erreur de frame UART");
+				ESP_LOGI(TAG_UART, "Erreur de frame UART");
 				break;
 			// UART_PATTERN_DET
 			case UART_PATTERN_DET:
 				uart_get_buffered_data_len(LINKY_UART_NUM, &buffered_size);
 				int pos = uart_pattern_pop_pos(LINKY_UART_NUM);
-				ESP_LOGI(TAG, "[PATTERN UART DÉTECTÉ] pos: %d, buffer: %d", pos, buffered_size);
+				ESP_LOGI(TAG_UART, "[PATTERN UART DÉTECTÉ] pos: %d, buffer: %d", pos, buffered_size);
 				if (pos == -1)
 				{
 					// The pattern position queue is full, flush the rx buffer here.
@@ -360,13 +362,13 @@ static void linky_event_task(void *pvParameters)
 					uint8_t pat[PATTERN_CHR_NUM + 1];
 					memset(pat, 0, sizeof(pat));
 					uart_read_bytes(LINKY_UART_NUM, pat, PATTERN_CHR_NUM, 100 / portTICK_PERIOD_MS);
-					ESP_LOGI(TAG, "lecture : %s", dtmp);
-					ESP_LOGI(TAG, "pattern : %s", pat);
+					ESP_LOGI(TAG_UART, "lecture : %s", dtmp);
+					ESP_LOGI(TAG_UART, "pattern : %s", pat);
 				}
 				break;
 			// Others
 			default:
-				ESP_LOGI(TAG, "Évènement UART type: %d", event.type);
+				ESP_LOGI(TAG_UART, "Évènement UART type: %d", event.type);
 				break;
 			}
 		}
@@ -524,7 +526,8 @@ void update_screen()
 
 	time(&now);
 	localtime_r(&now, &timeinfo);
-	if (timeinfo.tm_hour >= 6 && timeinfo.tm_hour < 22)
+	// Keep screen awake if time is not yet synced (defaulting to 1970) or if it's daytime (06:00 - 22:00)
+	if (timeinfo.tm_year < 100 || (timeinfo.tm_hour >= 6 && timeinfo.tm_hour < 22))
 	{
 		static char buff[12];
 		const char *mode_str[] = {"OFF", "AUTO", "ON", "PWM"};
@@ -977,36 +980,36 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 	switch (event->event_id)
 	{
 	case MQTT_EVENT_CONNECTED:
-		ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_CONNECTED");
 		msg_id = esp_mqtt_client_subscribe(client, MQTT_topic_mode, 0);
-		ESP_LOGI(TAG, "sent subscribe successful for mode, msg_id=%d", msg_id);
+		ESP_LOGI(TAG_MQTT, "sent subscribe successful for mode, msg_id=%d", msg_id);
 		msg_id = esp_mqtt_client_subscribe(client, MQTT_topic_pwm, 0);
-		ESP_LOGI(TAG, "sent subscribe successful for pwm, msg_id=%d", msg_id);
+		ESP_LOGI(TAG_MQTT, "sent subscribe successful for pwm, msg_id=%d", msg_id);
 
 		// msg_id = esp_mqtt_client_publish(client, "gBridge/u81/cmnd/SonoffAmpli/POWER", "ON", 0, 1, 0);
-		ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+		ESP_LOGI(TAG_MQTT, "sent publish successful, msg_id=%d", msg_id);
 		break;
 	case MQTT_EVENT_DISCONNECTED:
-		ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_DISCONNECTED");
 		if (command_mode == 1 || command_mode == 2)
 		{
-			ESP_LOGW(TAG, "MQTT disconnected, stopping remote-controlled load for safety");
+			ESP_LOGW(TAG_MQTT, "MQTT disconnected, stopping remote-controlled load for safety");
 			command_mode = -1;
 			command = 0.0;
 		}
 		break;
 
 	case MQTT_EVENT_SUBSCRIBED:
-		ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
 		break;
 	case MQTT_EVENT_UNSUBSCRIBED:
-		ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
 		break;
 	case MQTT_EVENT_PUBLISHED:
-		ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
 		break;
 	case MQTT_EVENT_DATA:
-		ESP_LOGI(TAG, "MQTT_EVENT_DATA");
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_DATA");
 		printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 		printf("DATA=%.*s\r\n", event->data_len, event->data);
 		if ((event->topic_len == strlen(MQTT_topic_mode)) && (strncmp(MQTT_topic_mode, event->topic, event->topic_len) == 0))
@@ -1100,10 +1103,20 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 		}
 		break;
 	case MQTT_EVENT_ERROR:
-		ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_ERROR");
+		if (event->error_handle != NULL)
+		{
+			ESP_LOGI(TAG_MQTT, "Error type: %d", event->error_handle->error_type);
+			ESP_LOGI(TAG_MQTT, "Last esp-tls error: 0x%x", event->error_handle->esp_tls_last_esp_err);
+			ESP_LOGI(TAG_MQTT, "Last tls stack error: 0x%x", event->error_handle->esp_tls_stack_err);
+			ESP_LOGI(TAG_MQTT, "Last socket errno: %d", event->error_handle->esp_transport_sock_errno);
+		}
+		break;
+	case MQTT_EVENT_BEFORE_CONNECT:
+		ESP_LOGI(TAG_MQTT, "MQTT_EVENT_BEFORE_CONNECT (Preparing connection...)");
 		break;
 	default:
-		ESP_LOGI(TAG, "Other event id:%d", event->event_id);
+		ESP_LOGI(TAG_MQTT, "Other event id:%d", event->event_id);
 		break;
 	}
 	return ESP_OK;
@@ -1128,7 +1141,7 @@ float estimate_load()
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-	ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
+	ESP_LOGD(TAG_MQTT, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
 	mqtt_event_handler_cb(event_data);
 }
 
