@@ -1,0 +1,135 @@
+esphome:
+  name: eco-pv32
+  includes:
+    - eco_pv32_component.h
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+  level: INFO
+
+# Enable Home Assistant API
+api:
+
+ota:
+
+wifi:
+  ssid: "ESP_Wifi"
+  password: "ESP_Password"
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Eco-PV32 Fallback Hotspot"
+    password: ""
+
+captive_portal:
+
+# Time component for timezone-aware nighttime screen sleeping
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "CET-1CEST,M3.5.0,M10.5.0/3"
+
+i2c:
+  sda: 21
+  scl: 22
+
+font:
+  - file: "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"
+    id: roboto_bold
+    size: 14
+  - file: "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
+    id: roboto_reg
+    size: 10
+
+sensor:
+  - platform: custom
+    lambda: |-
+      auto eco_pv = new EcoPV32Component();
+      App.register_component(eco_pv);
+      return {eco_pv->p_f_sensor, eco_pv->vrms_f_sensor, eco_pv->cosf_f_sensor, eco_pv->command_sensor};
+    sensors:
+      - name: "Puissance Active"
+        unit_of_measurement: "W"
+        accuracy_decimals: 1
+        id: active_power
+      - name: "Tension Efficace"
+        unit_of_measurement: "V"
+        accuracy_decimals: 1
+        id: rms_voltage
+      - name: "Facteur de Puissance"
+        accuracy_decimals: 3
+        id: power_factor
+      - name: "Commande TRIAC"
+        unit_of_measurement: "%"
+        accuracy_decimals: 1
+        id: triac_command
+
+number:
+  - platform: template
+    name: "Puissance Cible (Consigne)"
+    optimistic: true
+    min_value: -3000
+    max_value: 3000
+    step: 10
+    initial_value: 0
+    id: target_power
+    set_action:
+      then:
+        - lambda: |-
+            if (EcoPV32Component::instance() != nullptr) {
+              EcoPV32Component::instance()->set_point_input = x;
+            }
+
+select:
+  - platform: template
+    name: "Mode de Commande"
+    optimistic: true
+    options:
+      - "OFF"
+      - "AUTO"
+      - "ON"
+      - "PWM"
+    initial_option: "PWM"
+    id: control_mode
+    set_action:
+      then:
+        - lambda: |-
+            if (EcoPV32Component::instance() != nullptr) {
+              if (x == "OFF") {
+                EcoPV32Component::instance()->command_mode_input = -1;
+              } else if (x == "AUTO") {
+                EcoPV32Component::instance()->command_mode_input = 0;
+              } else if (x == "ON") {
+                EcoPV32Component::instance()->command_mode_input = 1;
+              } else if (x == "PWM") {
+                EcoPV32Component::instance()->command_mode_input = 2;
+              }
+            }
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    lambda: |-
+      auto time = id(sntp_time).now();
+      // Keep screen awake if time is not yet synced (defaulting to 1970) or if it's daytime (06:00 - 22:00)
+      if (time.year < 2000 || (time.hour >= 6 && time.hour < 22)) {
+        it.printf(0, 0, id(roboto_bold), "%.0f W", id(active_power).state);
+        it.printf(0, 18, id(roboto_reg), "cos phi: %.2f", id(power_factor).state);
+        it.printf(0, 34, id(roboto_reg), "V: %.1f V", id(rms_voltage).state);
+        
+        const char *mode_str = "Unknown";
+        if (EcoPV32Component::instance() != nullptr) {
+          int mode = EcoPV32Component::instance()->command_mode_input;
+          if (mode == -1) mode_str = "OFF";
+          else if (mode == 0) mode_str = "AUTO";
+          else if (mode == 1) mode_str = "ON";
+          else if (mode == 2) mode_str = "PWM";
+        }
+        it.printf(0, 50, id(roboto_reg), "Mode: %s", mode_str);
+      }
