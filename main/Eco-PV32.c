@@ -158,7 +158,7 @@ static int s_retry_num = 0;
 
 // -- Linky UART --
 QueueHandle_t uart_queue;
-TaskHandle_t Linky; // Handle vers le buffer d' l'UART Linky
+TaskHandle_t Linky; // Handle vers le buffer de l'UART Linky
 
 // SSD1306 Screen
 u8g2_t u8g2;
@@ -189,7 +189,7 @@ float Vrms_F = 230.0;				   // Filtered RMS voltage
 float R_est = 0.0;					   // Estimated resistance of the load (a purely resistive load is assumed)
 
 // -- Contrôleur PI du TRIAC --
-int command_mode = 0;		   // -1 = OFF, 0 = AUTO, 1 = ON
+int command_mode = 2;		   // -1 = OFF, 0 = AUTO, 1 = ON, 2 = PWM
 float command = 0.0;		   // Command sent to TRIAC in fraction of maximal energy
 float set_point = 0.0;		   // Puissance active cible
 const float PI_gain = 0.00002; // Gain du contrôleur PI
@@ -210,14 +210,15 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 	}
 	else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
 	{
-		if (s_retry_num < WIFI_MAXIMUM_RETRY)
+		esp_wifi_connect();
+		xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+		ESP_LOGI(TAG, "retry to connect to the AP");
+		if (command_mode == 1 || command_mode == 2)
 		{
-			esp_wifi_connect();
-			xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-			s_retry_num++;
-			ESP_LOGI(TAG, "retry to connect to the AP");
+			ESP_LOGW(TAG, "WiFi disconnected, stopping remote-controlled load for safety");
+			command_mode = -1;
+			command = 0.0;
 		}
-		ESP_LOGI(TAG, "connect to the AP fail");
 	}
 	else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
 	{
@@ -252,6 +253,7 @@ void wifi_init_sta(void)
 	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 	ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
 	ESP_ERROR_CHECK(esp_wifi_start());
+	esp_wifi_set_ps(WIFI_PS_NONE);
 
 	ESP_LOGI(TAG, "wifi_init_sta finished. Connected to AP %s\n", CONFIG_WIFI_SSID);
 }
@@ -271,7 +273,7 @@ void linky_init_uart()
 	// Configure UART parameters
 	ESP_ERROR_CHECK(uart_param_config(LINKY_UART_NUM, &uart_config));
 	ESP_ERROR_CHECK(uart_set_pin(LINKY_UART_NUM, GPIO_NUM_17, GPIO_NUM_16, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-	ESP_ERROR_CHECK(uart_driver_install(LINKY_UART_NUM, LINKY_BUFFER_SIZE, 0, 10, &uart_queue, 0)); // No TX buffer
+	ESP_ERROR_CHECK(uart_driver_install(LINKY_UART_NUM, LINKY_BUFFER_SIZE * 2, 0, 20, &uart_queue, 0)); // No TX buffer
 	uart_enable_pattern_det_baud_intr(LINKY_UART_NUM, 0x0D, PATTERN_CHR_NUM, 9, 0, 0);
 	uart_pattern_queue_reset(LINKY_UART_NUM, 20);
 }
@@ -295,20 +297,20 @@ void linky_init_uart()
 //   - URMS1: tension efficace, résolution 1V sur 3 chiffres
 //   - SINSTS: puissance apparente soutirée en VA sur 5 chiffres
 //   - UMOY1: tension moyenne (sur 10 minutes au lieu d'1 sec par défaut)
-// La puissance apparente en VA et le tension efficace en V devraient donner une meilleure
+// La puissance apparente en VA et la tension efficace en V devraient donner une meilleure
 // estimation du courant RMS.
 static void linky_event_task(void *pvParameters)
 {
 	uart_event_t event;
 	size_t buffered_size;
-	uint8_t *dtmp = (uint8_t *)malloc(128); // TODO set define
+	uint8_t *dtmp = (uint8_t *)malloc(LINKY_BUFFER_SIZE); // TODO set define
 
 	for (;;)
 	{
 		// Attente d'évènement UART
 		if (xQueueReceive(uart_queue, (void *)&event, (portTickType)portMAX_DELAY))
 		{
-			bzero(dtmp, 1024);
+			bzero(dtmp, LINKY_BUFFER_SIZE);
 			ESP_LOGI(TAG, "Évènement UART[%d] :", LINKY_UART_NUM);
 			switch (event.type)
 			{
@@ -318,31 +320,31 @@ static void linky_event_task(void *pvParameters)
 				ESP_LOGI(TAG, "[Évènmt UART]:");
 				uart_write_bytes(LINKY_UART_NUM, (const char *)dtmp, event.size);
 				break;
-			//Event of HW FIFO overflow detected
+			// Event of HW FIFO overflow detected
 			case UART_FIFO_OVF:
 				ESP_LOGI(TAG, "Overflow FIFO UART");
 				uart_flush_input(LINKY_UART_NUM);
 				xQueueReset(uart_queue);
 				break;
-			//Event of UART ring buffer full
+			// Event of UART ring buffer full
 			case UART_BUFFER_FULL:
 				ESP_LOGI(TAG, "Ring buffer UART plein");
 				uart_flush_input(LINKY_UART_NUM);
 				xQueueReset(uart_queue);
 				break;
-			//Event of UART RX break detected
+			// Event of UART RX break detected
 			case UART_BREAK:
 				ESP_LOGI(TAG, "Rx break UART");
 				break;
-			//Event of UART parity check error
+			// Event of UART parity check error
 			case UART_PARITY_ERR:
 				ESP_LOGI(TAG, "Erreur de parité UART");
 				break;
-			//Event of UART frame error
+			// Event of UART frame error
 			case UART_FRAME_ERR:
-				ESP_LOGI(TAG, "Errur de frame UART");
+				ESP_LOGI(TAG, "Erreur de frame UART");
 				break;
-			//UART_PATTERN_DET
+			// UART_PATTERN_DET
 			case UART_PATTERN_DET:
 				uart_get_buffered_data_len(LINKY_UART_NUM, &buffered_size);
 				int pos = uart_pattern_pop_pos(LINKY_UART_NUM);
@@ -362,7 +364,7 @@ static void linky_event_task(void *pvParameters)
 					ESP_LOGI(TAG, "pattern : %s", pat);
 				}
 				break;
-			//Others
+			// Others
 			default:
 				ESP_LOGI(TAG, "Évènement UART type: %d", event.type);
 				break;
@@ -525,7 +527,7 @@ void update_screen()
 	if (timeinfo.tm_hour >= 6 && timeinfo.tm_hour < 22)
 	{
 		static char buff[12];
-		const char *mode_str[] = {"OFF", "AUTO", "ON"};
+		const char *mode_str[] = {"OFF", "AUTO", "ON", "PWM"};
 		unsigned w;
 
 		u8g2_SetPowerSave(&u8g2, 0);
@@ -627,6 +629,10 @@ void sample_analyzer(void *parameters)
 				command = 1.0;
 				error = 0;
 			}
+			else if (command_mode == 2)
+			{
+				error = 0;
+			}
 			else
 			{
 				error = (set_point - P_F);
@@ -634,12 +640,12 @@ void sample_analyzer(void *parameters)
 				command = (PI_gain * error) + ((PI_gain / PI_tau) * integral);
 			}
 
-			if (command <= 0.0)
+			if (command < 0.0)
 			{
 				command = 0.0;
 				integral -= error; // ne pas intégrer, impossible de faire plus
 			}
-			else if (command >= 1.0)
+			else if (command > 1.0)
 			{
 				command = 1.0;
 				integral -= error; // ne pas intégrer, impossible de faire plus
@@ -786,7 +792,7 @@ unsigned esp32_adc_calibrate()
 		printf("(rmsd %u):\n", rmsd);
 		for (unsigned i = 0; i < 258; ++i)
 			printf("Sortie ADC %u Corrigée %d\n", i, ADC_calibration[i]);
-		//for (unsigned i = 0; i < MAX_ADC_OUTPUT; ++i)
+		// for (unsigned i = 0; i < MAX_ADC_OUTPUT; ++i)
 		//	printf("Sortie ADC %d Corrigée %d\n", i, recalibrate(i));
 	}
 	dac_output_disable(DAC_CALI_CHANNEL);
@@ -815,7 +821,7 @@ void set_DAC_biases()
 //      Échantillonnage en IRam par interruption timer
 //      Utilise des accès direct au hardware pour
 //      le timer, les adc et une gpio (pour éviter les appels
-//      hors IRAM). La routinr prend environ 38 µS.
+//      hors IRAM). La routine prend environ 38 µS.
 // ------------------------------------------------------------
 void IRAM_ATTR onTimer()
 {
@@ -835,25 +841,29 @@ void IRAM_ATTR onTimer()
 	SENS.sar_meas_start1.sar1_en_pad = (1 << ADC_AMPS_CHANNEL);
 
 	// The following loop takes ~ 1 µS
-	while (SENS.sar_slave_addr1.meas_status != 0)
+	int timeout = 1000;
+	while (SENS.sar_slave_addr1.meas_status != 0 && --timeout > 0)
 		;
 
 	SENS.sar_meas_start1.meas1_start_sar = 0;
 	SENS.sar_meas_start1.meas1_start_sar = 1;
 
 	// The following loop takes ~ 7.5 µS
-	while (SENS.sar_meas_start1.meas1_done_sar == 0)
+	timeout = 1000;
+	while (SENS.sar_meas_start1.meas1_done_sar == 0 && --timeout > 0)
 		;
 
 	I = recalibrate(SENS.sar_meas_start1.meas1_data_sar);
 
 	// échantillonnage V
 	SENS.sar_meas_start1.sar1_en_pad = (1 << ADC_VOLT_CHANNEL);
-	while (SENS.sar_slave_addr1.meas_status != 0)
+	timeout = 1000;
+	while (SENS.sar_slave_addr1.meas_status != 0 && --timeout > 0)
 		;
 	SENS.sar_meas_start1.meas1_start_sar = 0;
 	SENS.sar_meas_start1.meas1_start_sar = 1;
-	while (SENS.sar_meas_start1.meas1_done_sar == 0)
+	timeout = 1000;
+	while (SENS.sar_meas_start1.meas1_done_sar == 0 && --timeout > 0)
 		;
 	V = recalibrate(SENS.sar_meas_start1.meas1_data_sar);
 
@@ -961,20 +971,29 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
 	esp_mqtt_client_handle_t client = event->client;
 	int msg_id;
-	const char MQTT_topic[] = "PV-Router/MODE";
+	const char MQTT_topic_mode[] = "PV-Router/MODE";
+	const char MQTT_topic_pwm[] = "PV-Router/PWM";
 	// your_context_t *context = event->context;
 	switch (event->event_id)
 	{
 	case MQTT_EVENT_CONNECTED:
 		ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-		msg_id = esp_mqtt_client_subscribe(client, MQTT_topic, 0);
-		ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+		msg_id = esp_mqtt_client_subscribe(client, MQTT_topic_mode, 0);
+		ESP_LOGI(TAG, "sent subscribe successful for mode, msg_id=%d", msg_id);
+		msg_id = esp_mqtt_client_subscribe(client, MQTT_topic_pwm, 0);
+		ESP_LOGI(TAG, "sent subscribe successful for pwm, msg_id=%d", msg_id);
 
-		//msg_id = esp_mqtt_client_publish(client, "gBridge/u81/cmnd/SonoffAmpli/POWER", "ON", 0, 1, 0);
+		// msg_id = esp_mqtt_client_publish(client, "gBridge/u81/cmnd/SonoffAmpli/POWER", "ON", 0, 1, 0);
 		ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 		break;
 	case MQTT_EVENT_DISCONNECTED:
 		ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+		if (command_mode == 1 || command_mode == 2)
+		{
+			ESP_LOGW(TAG, "MQTT disconnected, stopping remote-controlled load for safety");
+			command_mode = -1;
+			command = 0.0;
+		}
 		break;
 
 	case MQTT_EVENT_SUBSCRIBED:
@@ -990,7 +1009,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 		ESP_LOGI(TAG, "MQTT_EVENT_DATA");
 		printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
 		printf("DATA=%.*s\r\n", event->data_len, event->data);
-		if ((event->topic_len == strlen(MQTT_topic)) && (strncmp(MQTT_topic, event->topic, event->topic_len) == 0))
+		if ((event->topic_len == strlen(MQTT_topic_mode)) && (strncmp(MQTT_topic_mode, event->topic, event->topic_len) == 0))
 		{
 			if (strncmp(event->data, "ON", event->data_len) == 0)
 			{
@@ -1008,6 +1027,11 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 				command_mode = 0;
 				set_point = 0.0;
 			}
+			else if (strncmp(event->data, "PWM", event->data_len) == 0)
+			{
+				printf("Setting to PWM direct control mode\n");
+				command_mode = 2;
+			}
 			else if (event->data_len <= 5) // message longer than 5 are ignored
 			{
 				char tmp[6];
@@ -1016,6 +1040,25 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 				printf("Setting to AUTO, target %s\n", tmp);
 				command_mode = 0;
 				set_point = atoi(tmp);
+			}
+		}
+		else if ((event->topic_len == strlen(MQTT_topic_pwm)) && (strncmp(MQTT_topic_pwm, event->topic, event->topic_len) == 0))
+		{
+			char tmp[16];
+			int len = event->data_len < 15 ? event->data_len : 15;
+			strncpy(tmp, event->data, len);
+			tmp[len] = 0;
+			float val = atof(tmp);
+			if (val >= 0.0)
+			{
+				if (val > 1.0)
+				{
+					val = val / 100.0; // Assume percentage
+				}
+				if (val > 1.0) val = 1.0;
+				printf("Setting direct PWM command to %f\n", val);
+				command_mode = 2; // Switch to PWM mode
+				command = val;
 			}
 		}
 		break;
@@ -1041,6 +1084,7 @@ float estimate_load()
 	command_mode = 1;
 	vTaskDelay(5000 / portTICK_PERIOD_MS);
 	P_load += P_F;
+	command = 0;
 	command_mode = save_cm;
 	return V1 * Vrms_F / P_load;
 }
@@ -1105,7 +1149,7 @@ void app_main(void)
 	// se connecter au routeur
 	wifi_init_sta();
 	vTaskDelay(3000 / portTICK_PERIOD_MS);
-	//setenv("TZ", "MET-1MDT,,M3.5.0/-2,M10.5.0/-1", 1);
+	// setenv("TZ", "MET-1MDT,,M3.5.0/-2,M10.5.0/-1", 1);
 	setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
 	tzset();
 
