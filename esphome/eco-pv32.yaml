@@ -39,10 +39,10 @@ i2c:
   scl: 22
 
 font:
-  - file: "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"
+  - file: "https://github.com/google/fonts/raw/master/apache/roboto/Roboto-Bold.ttf"
     id: roboto_bold
     size: 14
-  - file: "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
+  - file: "https://github.com/google/fonts/raw/master/apache/roboto/Roboto-Regular.ttf"
     id: roboto_reg
     size: 10
 
