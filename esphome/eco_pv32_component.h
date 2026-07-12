@@ -50,8 +50,8 @@ static const char *TAG_UART = "uart_linky";
 #define ADC_VOLT_CHANNEL ADC1_CHANNEL_0							  // PIN 36
 #define ADC_AMPS_CHANNEL ADC1_CHANNEL_3							  // PIN 39
 #define ADC_CALI_CHANNEL ADC1_CHANNEL_5							  // PIN 33
-#define DAC_CALI_CHANNEL DAC_CHANNEL_1							  // PIN 25
-#define DAC_BIASV_CHANNEL DAC_CHANNEL_2							  // PIN 26
+#define DAC_CALI_CHANNEL DAC_CHAN_0							  // PIN 25
+#define DAC_BIASV_CHANNEL DAC_CHAN_1							  // PIN 26
 #define TIMER_DIVIDER (2)										  // Division pour le timer échantillonage (80 / 2 = 40 MHz)
 #define TIMER_SCALE_SEC (80000000ULL / TIMER_DIVIDER)		  // convertir compteur en secondes
 #define TIMER_INTERVAL (TIMER_SCALE_SEC / 50 / SAMPLES_PER_CYCLE) // délai échantillonnage par cycle de 20ms
@@ -647,6 +647,7 @@ class EcoPV32Component : public esphome::Component {
 
   float set_point_input = 0.0;
   int command_mode_input = 2; // Default to PWM mode
+  float command_input = 0.0;
 
   void setup() override {
 	instance() = this;
@@ -700,6 +701,9 @@ class EcoPV32Component : public esphome::Component {
 	// Mettre à jour les variables globales depuis les commandes ESPHome
 	set_point = set_point_input;
 	command_mode = command_mode_input;
+	if (command_mode == 2) {
+		command = command_input;
+	}
 
 	// Publication périodique des mesures
 	static uint32_t last_update = 0;
