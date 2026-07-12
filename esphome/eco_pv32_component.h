@@ -445,10 +445,13 @@ unsigned esp32_adc_calibrate()
 
 		for (unsigned j = 0; j < 64; ++j)
 		{
+			int retry = 1000;
 			do
 			{
 				raw_read = adc1_get_raw(ADC_CALI_CHANNEL);
-			} while (raw_read < 0);
+			} while (raw_read < 0 && --retry > 0);
+
+			if (raw_read < 0) raw_read = 0;
 
 			cal_fwd[dac_output] += raw_read;
 		}
@@ -606,10 +609,7 @@ void sampling_isr_init()
 	timer_enable_intr(TIMER_GROUP_1, TIMER_1);
 	timer_isr_register(TIMER_GROUP_1, TIMER_1, onTimer, NULL, 3 | ESP_INTR_FLAG_IRAM, NULL);
 
-	while (adc1_get_raw(ADC_VOLT_CHANNEL) > adc_biasV)
-		;
-	while (adc1_get_raw(ADC_VOLT_CHANNEL) <= adc_biasV)
-		;
+	// No blocking waiting for zero-crossing during startup to prevent watchdog reset
 	lastzc_time = REG_READ(FRC_TIMER_COUNT_REG(1));
 	timer_start(TIMER_GROUP_1, TIMER_1);
 }
@@ -668,8 +668,9 @@ class EcoPV32Component : public esphome::Component {
 	// Calibration timer FRC2
 	apb_freq = rtc_clk_apb_freq_get();
 
-	// Calibrer l'ADC
-	while (esp32_adc_calibrate() > 1750) {
+	// Calibrer l'ADC (limit to 3 attempts to prevent boot timeout)
+	int cal_attempts = 0;
+	while (esp32_adc_calibrate() > 1750 && ++cal_attempts < 3) {
 		delay(10);
 	}
 
