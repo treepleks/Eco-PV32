@@ -692,9 +692,9 @@ class EcoPV32Component : public esphome::Component {
 	linky_init_uart();
 	xTaskCreatePinnedToCore(linky_event_task, "linky", 2 * 1024, NULL, 2, &Linky, 0);
 
-	// Estimation de charge
-	R_est = estimate_load();
-	ESP_LOGI("eco_pv32", "Estimated load resistance: %f Ohm", R_est);
+	// Estimation de charge (Disabled to prevent blocking boot and triggering watchdog rollback)
+	// R_est = estimate_load();
+	// ESP_LOGI("eco_pv32", "Estimated load resistance: %f Ohm", R_est);
   }
 
   void loop() override {
