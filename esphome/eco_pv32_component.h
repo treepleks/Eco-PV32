@@ -680,11 +680,8 @@ class EcoPV32Component : public esphome::Component {
 	apb_freq = rtc_clk_apb_freq_get();
 
 	ESP_LOGI("eco_pv32", "setup: ADC calibration start");
-	// Calibrer l'ADC (limit to 3 attempts to prevent boot timeout)
-	int cal_attempts = 0;
-	while (esp32_adc_calibrate() > 1750 && ++cal_attempts < 3) {
-		delay(10);
-	}
+	unsigned rmsd = esp32_adc_calibrate();
+	ESP_LOGI("eco_pv32", "setup: ADC calibration completed (rmsd = %u)", rmsd);
 
 	ESP_LOGI("eco_pv32", "setup: compute e2d table start");
 	// Calculer la table
