@@ -390,7 +390,7 @@ void sample_analyzer(void *parameters)
 
 void triac_controller_init()
 {
-	ledc_timer_config_t timer_config;
+	ledc_timer_config_t timer_config = {};
 	timer_config.speed_mode = LEDC_HIGH_SPEED_MODE;
 	timer_config.timer_num = LEDC_TIMER_0;
 	timer_config.duty_resolution = LEDC_TIMER_10_BIT;
@@ -398,7 +398,7 @@ void triac_controller_init()
 	timer_config.clk_cfg = LEDC_AUTO_CLK;
 	ESP_ERROR_CHECK(ledc_timer_config(&timer_config));
 
-	ledc_channel_config_t led_config;
+	ledc_channel_config_t led_config = {};
 	led_config.gpio_num = PIN_TRIAC;
 	led_config.speed_mode = LEDC_HIGH_SPEED_MODE;
 	led_config.channel = LEDC_CHANNEL_0;
@@ -597,7 +597,7 @@ void sampling_isr_init()
 	REG_WRITE(FRC_TIMER_LOAD_REG(1), 0);
 	REG_WRITE(FRC_TIMER_CTRL_REG(1), FRC_TIMER_PRESCALER_1 | FRC_TIMER_ENABLE);
 
-	timer_config_t config;
+	timer_config_t config = {};
 	config.divider = TIMER_DIVIDER;
 	config.counter_dir = TIMER_COUNT_UP;
 	config.counter_en = TIMER_PAUSE;
