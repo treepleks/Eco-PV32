@@ -45,12 +45,12 @@ i2c:
   scl: 22
 
 font:
-  - file: "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Bold.ttf"
+  - file: "gfonts://VT323"
     id: roboto_bold
-    size: 14
-  - file: "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Regular.ttf"
+    size: 16
+  - file: "gfonts://VT323"
     id: roboto_reg
-    size: 10
+    size: 12
 
 sensor:
   - platform: template
