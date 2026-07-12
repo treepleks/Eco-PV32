@@ -458,6 +458,9 @@ unsigned esp32_adc_calibrate()
 			cal_fwd[dac_output] += raw_read;
 		}
 		rmsd += abs((int)dac_output - (int)(cal_fwd[dac_output] / 1024));
+		if (dac_output % 16 == 0) {
+			esphome::App.feed_wdt();
+		}
 	} while (++dac_output != 0);
 
 	unsigned x = 0;
@@ -679,9 +682,17 @@ class EcoPV32Component : public esphome::Component {
 	// Calibration timer FRC2
 	apb_freq = rtc_clk_apb_freq_get();
 
-	ESP_LOGI("eco_pv32", "setup: ADC calibration start");
-	unsigned rmsd = esp32_adc_calibrate();
-	ESP_LOGI("eco_pv32", "setup: ADC calibration completed (rmsd = %u)", rmsd);
+	int cal_attempts = 0;
+	unsigned rmsd = 99999;
+	while (true) {
+		rmsd = esp32_adc_calibrate();
+		ESP_LOGI("eco_pv32", "setup: ADC calibration attempt %d completed (rmsd = %u)", cal_attempts + 1, rmsd);
+		if (rmsd <= 1750 || ++cal_attempts >= 10) {
+			break;
+		}
+		delay(10);
+		esphome::App.feed_wdt();
+	}
 
 	ESP_LOGI("eco_pv32", "setup: compute e2d table start");
 	// Calculer la table
