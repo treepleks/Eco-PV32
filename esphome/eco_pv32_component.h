@@ -420,8 +420,10 @@ unsigned esp32_adc_calibrate()
 	gpio_num_t adc_gpio_num, dac_gpio_num;
 
 	err = adc1_pad_get_io_num(ADC_CALI_CHANNEL, &adc_gpio_num);
+	ESP_LOGI("eco_pv32", "Calibration: adc1_pad_get_io_num err = %d, gpio = %d", err, adc_gpio_num);
 	assert(err == ESP_OK);
 	err = dac_pad_get_io_num(DAC_CALI_CHANNEL, &dac_gpio_num);
+	ESP_LOGI("eco_pv32", "Calibration: dac_pad_get_io_num err = %d, gpio = %d", err, dac_gpio_num);
 	assert(err == ESP_OK);
 
 	unsigned cal_fwd[256];
@@ -487,11 +489,13 @@ void set_DAC_biases()
 	gpio_num_t dac_gpio_num;
 
 	err = dac_pad_get_io_num(DAC_BIASV_CHANNEL, &dac_gpio_num);
+	ESP_LOGI("eco_pv32", "set_DAC_biases: BIASV err = %d, gpio = %d", err, dac_gpio_num);
 	assert(err == ESP_OK);
 	dac_output_enable(DAC_BIASV_CHANNEL);
 	dac_output_voltage(DAC_BIASV_CHANNEL, 128);
 
 	err = dac_pad_get_io_num(DAC_CALI_CHANNEL, &dac_gpio_num);
+	ESP_LOGI("eco_pv32", "set_DAC_biases: CALI err = %d, gpio = %d", err, dac_gpio_num);
 	assert(err == ESP_OK);
 	dac_output_enable(DAC_CALI_CHANNEL);
 	dac_output_voltage(DAC_CALI_CHANNEL, 128);
@@ -603,11 +607,14 @@ void sampling_isr_init()
 #ifdef TIMER_GROUP_SUPPORTS_XTAL_CLOCK
 	config.clk_src = TIMER_SRC_CLK_APB;
 #endif
+	ESP_LOGI("eco_pv32", "sampling_isr_init: timer_init start");
 	timer_init(TIMER_GROUP_1, TIMER_1, &config);
 	timer_set_counter_value(TIMER_GROUP_1, TIMER_1, 0x00000000ULL);
 	timer_set_alarm_value(TIMER_GROUP_1, TIMER_1, alarm_value);
 	timer_enable_intr(TIMER_GROUP_1, TIMER_1);
-	timer_isr_register(TIMER_GROUP_1, TIMER_1, onTimer, NULL, 3 | ESP_INTR_FLAG_IRAM, NULL);
+	ESP_LOGI("eco_pv32", "sampling_isr_init: registering ISR");
+	esp_err_t isr_err = timer_isr_register(TIMER_GROUP_1, TIMER_1, onTimer, NULL, 3 | ESP_INTR_FLAG_IRAM, NULL);
+	ESP_LOGI("eco_pv32", "sampling_isr_init: timer_isr_register err = %d", isr_err);
 
 	// No blocking waiting for zero-crossing during startup to prevent watchdog reset
 	lastzc_time = REG_READ(FRC_TIMER_COUNT_REG(1));
@@ -651,47 +658,59 @@ class EcoPV32Component : public esphome::Component {
 
   void setup() override {
 	instance() = this;
+	ESP_LOGI("eco_pv32", "setup: PIN_TRIAC config start");
 	// Configuration pin TRIAC: sortie à 0 (OFF)
 	esp_rom_gpio_pad_select_gpio(PIN_TRIAC);
 	gpio_set_direction(PIN_TRIAC, GPIO_MODE_OUTPUT);
 	gpio_set_level(PIN_TRIAC, 0);
 
+	ESP_LOGI("eco_pv32", "setup: PIN_LED config start");
 	// Activation pin LED
 	esp_rom_gpio_pad_select_gpio(PIN_LED);
 	gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
 
+	ESP_LOGI("eco_pv32", "setup: PIN_ZC config start");
 	// Activation pin ZC
 	assert(PIN_ZC < 32);
 	esp_rom_gpio_pad_select_gpio(PIN_ZC);
 	gpio_set_direction(PIN_ZC, GPIO_MODE_OUTPUT);
 
+	ESP_LOGI("eco_pv32", "setup: APB clock config start");
 	// Calibration timer FRC2
 	apb_freq = rtc_clk_apb_freq_get();
 
+	ESP_LOGI("eco_pv32", "setup: ADC calibration start");
 	// Calibrer l'ADC (limit to 3 attempts to prevent boot timeout)
 	int cal_attempts = 0;
 	while (esp32_adc_calibrate() > 1750 && ++cal_attempts < 3) {
 		delay(10);
 	}
 
+	ESP_LOGI("eco_pv32", "setup: compute e2d table start");
 	// Calculer la table
 	compute_e2d_table();
 
+	ESP_LOGI("eco_pv32", "setup: set DAC biases start");
 	// Fixer les DAC pour les biais
 	set_DAC_biases();
 
+	ESP_LOGI("eco_pv32", "setup: creating sample_analyzer task");
 	// Tâche d'analyse sur le core 1
 	xTaskCreatePinnedToCore(sample_analyzer, "SA", 2 * 1024, NULL, 3, &SA, 1);
 
+	ESP_LOGI("eco_pv32", "setup: sampling_isr_init start");
 	// Démarrer le timer interruptions
 	sampling_isr_init();
 
+	ESP_LOGI("eco_pv32", "setup: triac_controller_init start");
 	// Préparer le générateur d'impulsions TRIAC
 	triac_controller_init();
 
+	ESP_LOGI("eco_pv32", "setup: linky task start");
 	// Tâche Linky UART sur le core 0
 	linky_init_uart();
 	xTaskCreatePinnedToCore(linky_event_task, "linky", 2 * 1024, NULL, 2, &Linky, 0);
+	ESP_LOGI("eco_pv32", "setup: complete");
 
 	// Estimation de charge (Disabled to prevent blocking boot and triggering watchdog rollback)
 	// R_est = estimate_load();

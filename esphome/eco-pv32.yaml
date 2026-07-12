@@ -6,9 +6,13 @@ esphome:
     priority: 600.0
     then:
       - lambda: |-
+          ESP_LOGI("eco_pv32", "on_boot starting custom component...");
           auto eco_pv = new EcoPV32Component();
+          ESP_LOGI("eco_pv32", "eco_pv component created");
           eco_pv->setup();
+          ESP_LOGI("eco_pv32", "eco_pv setup() completed");
           App.register_component_(eco_pv);
+          ESP_LOGI("eco_pv32", "eco_pv registered successfully");
 
 esp32:
   board: esp32dev
