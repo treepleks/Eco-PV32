@@ -7,6 +7,7 @@ esphome:
     then:
       - lambda: |-
           auto eco_pv = new EcoPV32Component();
+          eco_pv->setup();
           App.register_component_(eco_pv);
 
 esp32:
