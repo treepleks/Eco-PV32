@@ -50,8 +50,8 @@ static const char *TAG_UART = "uart_linky";
 #define ADC_VOLT_CHANNEL ADC1_CHANNEL_0							  // PIN 36
 #define ADC_AMPS_CHANNEL ADC1_CHANNEL_3							  // PIN 39
 #define ADC_CALI_CHANNEL ADC1_CHANNEL_5							  // PIN 33
-#define DAC_CALI_CHANNEL DAC_CHAN_0							  // PIN 25
-#define DAC_BIASV_CHANNEL DAC_CHAN_1							  // PIN 26
+#define DAC_CALI_CHANNEL DAC_CHANNEL_1							  // PIN 25
+#define DAC_BIASV_CHANNEL DAC_CHANNEL_2							  // PIN 26
 #define TIMER_DIVIDER (2)										  // Division pour le timer échantillonage (80 / 2 = 40 MHz)
 #define TIMER_SCALE_SEC (80000000ULL / TIMER_DIVIDER)		  // convertir compteur en secondes
 #define TIMER_INTERVAL (TIMER_SCALE_SEC / 50 / SAMPLES_PER_CYCLE) // délai échantillonnage par cycle de 20ms
