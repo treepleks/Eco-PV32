@@ -50,10 +50,10 @@ i2c:
   scl: 22
 
 font:
-  - file: "gfonts://VT323"
+  - file: "gfonts://Pixelify Sans"
     id: roboto_bold
     size: 16
-  - file: "gfonts://VT323"
+  - file: "gfonts://Pixelify Sans"
     id: roboto_reg
     size: 12
 
