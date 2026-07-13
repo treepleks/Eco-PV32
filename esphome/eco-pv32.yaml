@@ -55,12 +55,10 @@ i2c:
   scl: 22
 
 font:
-  - file: "gfonts://Roboto"
+  - file: "fonts/spleen-8x16.pcf"
     id: roboto_bold
-    size: 16
-  - file: "gfonts://Roboto"
+  - file: "fonts/spleen-6x12.pcf"
     id: roboto_reg
-    size: 12
 
 sensor:
   - platform: template
