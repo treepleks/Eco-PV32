@@ -20,7 +20,7 @@
 #include "soc/frc_timer_reg.h"
 #include "driver/ledc.h"
 #include <driver/adc.h>
-#include <driver/dac.h>
+#include "driver/dac_oneshot.h"
 #include "driver/uart.h"
 #include <driver/spi_master.h>
 #include "esp_timer.h"
@@ -49,8 +49,7 @@ static const char *TAG_UART = "uart_linky";
 #define ADC_OFFSET (1 << (ADC_BITS - 1))
 #define ADC_VOLT_CHANNEL ADC1_CHANNEL_0							  // PIN 36
 #define ADC_AMPS_CHANNEL ADC1_CHANNEL_3							  // PIN 39
-#define ADC_CALI_CHANNEL ADC1_CHANNEL_5							  // PIN 33
-#define DAC_CALI_CHANNEL DAC_CHAN_0							  // PIN 25
+#define DAC_BIASI_CHANNEL DAC_CHAN_0							  // PIN 25
 #define DAC_BIASV_CHANNEL DAC_CHAN_1							  // PIN 26
 #define TIMER_DIVIDER (2)										  // Division pour le timer échantillonage (80 / 2 = 40 MHz)
 #define TIMER_SCALE_SEC (80000000ULL / TIMER_DIVIDER)		  // convertir compteur en secondes
@@ -68,8 +67,6 @@ static const char *TAG_UART = "uart_linky";
 #define LINKY_BUFFER_SIZE (1024) // Taille du buffer Linky. TODO: réduire au minimum
 #define PATTERN_CHR_NUM (1)		 // Nombre de caractères dans le motif UART
 
-// macro recalibration ADC par la table ADC_calibration
-#define recalibrate(r) ((ADC_calibration[(r) >> 4] * (16 - ((r)&0xF))) + (ADC_calibration[((r) >> 4) + 1] * ((r)&0xF)))
 // filtrage numérique simple
 #define filter(o, n, decay) o = (((o) * (decay)) + ((n) * (1 - (decay))))
 
@@ -92,7 +89,6 @@ QueueHandle_t uart_queue;
 TaskHandle_t Linky; // Handle vers le buffer de l'UART Linky
 
 // -- Échantillonnage --
-unsigned short ADC_calibration[258];   // Données de calibration pour le convertisseur AD
 TaskHandle_t SA;					   // Handle vers la tâche d'analyse des échantillons
 unsigned short adc_biasV = ADC_OFFSET; // Offset pour le canal des tensions
 unsigned short adc_biasI = ADC_OFFSET; // Offset pour le canal des courants
@@ -413,97 +409,32 @@ void triac_controller_init()
 	printf("Timer et canal de contrôle PWM du TRIAC/SSR initialisé.\n");
 }
 
-unsigned esp32_adc_calibrate()
+// Configure l'ADC1. Les lectures initiales sont indispensables : elles mettent en place
+// les registres (contrôleur RTC, alimentation) que l'ISR utilise ensuite directement.
+void adc_init()
 {
-	const static bool debug = false;
-	esp_err_t err;
-	gpio_num_t adc_gpio_num, dac_gpio_num;
-
-	err = adc1_pad_get_io_num(ADC_CALI_CHANNEL, &adc_gpio_num);
-	ESP_LOGI("eco_pv32", "Calibration: adc1_pad_get_io_num err = %d, gpio = %d", err, adc_gpio_num);
-	assert(err == ESP_OK);
-	err = dac_pad_get_io_num(DAC_CALI_CHANNEL, &dac_gpio_num);
-	ESP_LOGI("eco_pv32", "Calibration: dac_pad_get_io_num err = %d, gpio = %d", err, dac_gpio_num);
-	assert(err == ESP_OK);
-
-	unsigned cal_fwd[256];
-	unsigned rmsd = 0;
-
-	printf("Calibration canal ADC %d @ GPIO %d via le canal DAC %d @ GPIO %d...", ADC_CALI_CHANNEL, adc_gpio_num, DAC_CALI_CHANNEL, dac_gpio_num);
-	fflush(stdout);
-	dac_output_enable(DAC_CALI_CHANNEL);
 	adc1_config_width(ADC_WIDTH_BIT_12);
-	adc1_config_channel_atten(ADC_CALI_CHANNEL, ADC_ATTEN_DB_12);
 	adc1_config_channel_atten(ADC_VOLT_CHANNEL, ADC_ATTEN_DB_12);
 	adc1_config_channel_atten(ADC_AMPS_CHANNEL, ADC_ATTEN_DB_12);
-
-	uint8_t dac_output = 0;
-	int raw_read;
-	for (unsigned i = 0; i < 256; ++i)
-		cal_fwd[i] = 0;
-
-	do
-	{
-		dac_output_voltage(DAC_CALI_CHANNEL, dac_output);
-		vTaskDelay(10 / portTICK_PERIOD_MS);
-
-		for (unsigned j = 0; j < 64; ++j)
-		{
-			int retry = 1000;
-			do
-			{
-				raw_read = adc1_get_raw(ADC_CALI_CHANNEL);
-			} while (raw_read < 0 && --retry > 0);
-
-			if (raw_read < 0) raw_read = 0;
-
-			cal_fwd[dac_output] += raw_read;
-		}
-		rmsd += abs((int)dac_output - (int)(cal_fwd[dac_output] / 1024));
-		if (dac_output % 16 == 0) {
-			esphome::App.feed_wdt();
-		}
-	} while (++dac_output != 0);
-
-	unsigned x = 0;
-	ADC_calibration[0] = 0;
-	ADC_calibration[257] = 256;
-	for (unsigned i = 0; i < 256; ++i)
-	{
-		while (cal_fwd[x] <= 1024 * i)
-		{
-			ADC_calibration[i + 1] = x++;
-		}
-		x = ((x > 0) ? x - 1 : 0);
-	}
-
-	if (debug)
-	{
-		printf("(rmsd %u):\n", rmsd);
-		for (unsigned i = 0; i < 258; ++i)
-			printf("Sortie ADC %u Corrigée %d\n", i, ADC_calibration[i]);
-	}
-	dac_output_disable(DAC_CALI_CHANNEL);
-	printf("Ok.\n");
-	return rmsd;
+	adc1_get_raw(ADC_VOLT_CHANNEL);
+	adc1_get_raw(ADC_AMPS_CHANNEL);
 }
 
+// Fixer les sorties des DAC au point milieu pour les biais V/I.
 void set_DAC_biases()
 {
-	esp_err_t err;
-	gpio_num_t dac_gpio_num;
+	static dac_oneshot_handle_t biasV_handle;
+	static dac_oneshot_handle_t biasI_handle;
 
-	err = dac_pad_get_io_num(DAC_BIASV_CHANNEL, &dac_gpio_num);
-	ESP_LOGI("eco_pv32", "set_DAC_biases: BIASV err = %d, gpio = %d", err, dac_gpio_num);
-	assert(err == ESP_OK);
-	dac_output_enable(DAC_BIASV_CHANNEL);
-	dac_output_voltage(DAC_BIASV_CHANNEL, 128);
+	dac_oneshot_config_t biasV_config = {};
+	biasV_config.chan_id = DAC_BIASV_CHANNEL;
+	ESP_ERROR_CHECK(dac_oneshot_new_channel(&biasV_config, &biasV_handle));
+	ESP_ERROR_CHECK(dac_oneshot_output_voltage(biasV_handle, 128));
 
-	err = dac_pad_get_io_num(DAC_CALI_CHANNEL, &dac_gpio_num);
-	ESP_LOGI("eco_pv32", "set_DAC_biases: CALI err = %d, gpio = %d", err, dac_gpio_num);
-	assert(err == ESP_OK);
-	dac_output_enable(DAC_CALI_CHANNEL);
-	dac_output_voltage(DAC_CALI_CHANNEL, 128);
+	dac_oneshot_config_t biasI_config = {};
+	biasI_config.chan_id = DAC_BIASI_CHANNEL;
+	ESP_ERROR_CHECK(dac_oneshot_new_channel(&biasI_config, &biasI_handle));
+	ESP_ERROR_CHECK(dac_oneshot_output_voltage(biasI_handle, 128));
 }
 
 static portMUX_TYPE timer_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -530,7 +461,7 @@ void IRAM_ATTR onTimer(void *arg)
 	timeout = 1000;
 	while (SENS.sar_meas_start1.meas1_done_sar == 0 && --timeout > 0)
 		;
-	I = recalibrate(SENS.sar_meas_start1.meas1_data_sar);
+	I = SENS.sar_meas_start1.meas1_data_sar;
 
 	SENS.sar_meas_start1.sar1_en_pad = (1 << ADC_VOLT_CHANNEL);
 	timeout = 1000;
@@ -541,7 +472,7 @@ void IRAM_ATTR onTimer(void *arg)
 	timeout = 1000;
 	while (SENS.sar_meas_start1.meas1_done_sar == 0 && --timeout > 0)
 		;
-	V = recalibrate(SENS.sar_meas_start1.meas1_data_sar);
+	V = SENS.sar_meas_start1.meas1_data_sar;
 
 	if (full_cycle_sample_size >= SAMPLES_PER_CYCLE)
 	{
@@ -684,23 +615,8 @@ class EcoPV32Component : public esphome::Component {
 	// Calibration timer FRC2
 	apb_freq = rtc_clk_apb_freq_get();
 
-	int cal_attempts = 0;
-	unsigned rmsd = 99999;
-	while (true) {
-		rmsd = esp32_adc_calibrate();
-		ESP_LOGI("eco_pv32", "setup: ADC calibration attempt %d completed (rmsd = %u)", cal_attempts + 1, rmsd);
-		if (rmsd <= 1750 || ++cal_attempts >= 10) {
-			break;
-		}
-		delay(10);
-		esphome::App.feed_wdt();
-	}
-
-	// La table mesurée via le DAC surestime les tensions d'environ 20% : on la remplace
-	// par une table identité (lectures brutes). esp32_adc_calibrate() reste appelée car
-	// elle configure aussi la largeur et l'atténuation de l'ADC.
-	for (unsigned i = 0; i < 257; ++i) ADC_calibration[i] = i;
-	ADC_calibration[257] = 256;
+	ESP_LOGI("eco_pv32", "setup: ADC init start");
+	adc_init();
 
 	ESP_LOGI("eco_pv32", "setup: compute e2d table start");
 	// Calculer la table
