@@ -69,6 +69,8 @@ sensor:
     lambda: |-
       return P_F;
     update_interval: 1s
+    filters:
+      - throttle_average: 10s
 
   - platform: template
     name: "Tension Efficace"
@@ -78,6 +80,8 @@ sensor:
     lambda: |-
       return Vrms_F;
     update_interval: 1s
+    filters:
+      - throttle_average: 10s
 
   - platform: template
     name: "Facteur de Puissance"
@@ -86,6 +90,8 @@ sensor:
     lambda: |-
       return cosf_F;
     update_interval: 1s
+    filters:
+      - throttle_average: 10s
 
   - platform: template
     name: "Commande TRIAC"
@@ -95,6 +101,8 @@ sensor:
     lambda: |-
       return command * 100.0;
     update_interval: 1s
+    filters:
+      - throttle_average: 10s
 
 number:
   - platform: template
@@ -163,9 +171,10 @@ display:
       auto time = id(sntp_time).now();
       // Keep screen awake if time is not yet synced (defaulting to 1970) or if it's daytime (06:00 - 22:00)
       if (time.year < 2000 || (time.hour >= 6 && time.hour < 22)) {
-        it.printf(0, 0, id(roboto_bold), "%.0f W", id(active_power).state);
-        it.printf(0, 18, id(roboto_reg), "cos phi: %.2f", id(power_factor).state);
-        it.printf(0, 34, id(roboto_reg), "V: %.1f V", id(rms_voltage).state);
+        // Read the live values: the sensors above are throttled for Home Assistant
+        it.printf(0, 0, id(roboto_bold), "%.0f W", P_F);
+        it.printf(0, 18, id(roboto_reg), "cos phi: %.2f", cosf_F);
+        it.printf(0, 34, id(roboto_reg), "V: %.1f V", Vrms_F);
         
         const char *mode_str = "Unknown";
         if (EcoPV32Component::instance() != nullptr) {

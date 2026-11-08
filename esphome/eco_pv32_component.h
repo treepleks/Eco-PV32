@@ -76,7 +76,7 @@ static const char *TAG_UART = "uart_linky";
 //-------------------------------------------------------------
 // Conversion des lectures en unités du système international (SI)
 //-------------------------------------------------------------
-#define TRANSFORMERATIO (230.0 / 2.085)
+#define TRANSFORMERATIO (230.0 / 2.023)
 #define VDIVIDERATIO (2.0)
 #define VREF (3.3)
 #define BIT2VOLTMULTIPLIER ((VREF / (1 << ADC_BITS)) * TRANSFORMERATIO * VDIVIDERATIO)
@@ -434,6 +434,8 @@ unsigned esp32_adc_calibrate()
 	dac_output_enable(DAC_CALI_CHANNEL);
 	adc1_config_width(ADC_WIDTH_BIT_12);
 	adc1_config_channel_atten(ADC_CALI_CHANNEL, ADC_ATTEN_DB_12);
+	adc1_config_channel_atten(ADC_VOLT_CHANNEL, ADC_ATTEN_DB_12);
+	adc1_config_channel_atten(ADC_AMPS_CHANNEL, ADC_ATTEN_DB_12);
 
 	uint8_t dac_output = 0;
 	int raw_read;
@@ -693,6 +695,12 @@ class EcoPV32Component : public esphome::Component {
 		delay(10);
 		esphome::App.feed_wdt();
 	}
+
+	// La table mesurée via le DAC surestime les tensions d'environ 20% : on la remplace
+	// par une table identité (lectures brutes). esp32_adc_calibrate() reste appelée car
+	// elle configure aussi la largeur et l'atténuation de l'ADC.
+	for (unsigned i = 0; i < 257; ++i) ADC_calibration[i] = i;
+	ADC_calibration[257] = 256;
 
 	ESP_LOGI("eco_pv32", "setup: compute e2d table start");
 	// Calculer la table
