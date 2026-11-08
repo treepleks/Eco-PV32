@@ -753,6 +753,8 @@ unsigned esp32_adc_calibrate()
 	// utiliser l'échelle 3.3V entière sur 12 bits.
 	adc1_config_width(ADC_WIDTH_BIT_12);
 	adc1_config_channel_atten(ADC_CALI_CHANNEL, ADC_ATTEN_11db);
+	adc1_config_channel_atten(ADC_VOLT_CHANNEL, ADC_ATTEN_11db);
+	adc1_config_channel_atten(ADC_AMPS_CHANNEL, ADC_ATTEN_11db);
 
 	uint8_t dac_output = 0;
 	int raw_read;
