@@ -85,10 +85,11 @@ sensor:
 
   - platform: template
     name: "Facteur de Puissance"
-    accuracy_decimals: 3
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
     id: power_factor
     lambda: |-
-      return cosf_F;
+      return cosf_F * 100.0;
     update_interval: 1s
     filters:
       - throttle_average: 10s
@@ -173,7 +174,7 @@ display:
       if (time.year < 2000 || (time.hour >= 6 && time.hour < 22)) {
         // Read the live values: the sensors above are throttled for Home Assistant
         it.printf(0, 0, id(roboto_bold), "%.0f W", P_F);
-        it.printf(0, 18, id(roboto_reg), "cos phi: %.2f", cosf_F);
+        it.printf(0, 18, id(roboto_reg), "cos phi: %.0f %%", cosf_F * 100.0);
         it.printf(0, 34, id(roboto_reg), "V: %.1f V", Vrms_F);
         
         const char *mode_str = "Unknown";
